@@ -1,0 +1,2767 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CandleBoard</title>
+<style>
+/* ============================================================
+   CandleBoard — 手描きローソク足チャート付箋ボード
+   骨組み / camera / グリッド / パン・ズーム / 描画ループ
+   Candle オブジェクト / 選択・移動・削除・コピペ / Undo・Redo / 重ね順
+   描画ツール群 / フィボナッチ / 永続化・複数ボード・JSON入出力
+   ============================================================ */
+:root{
+  --bg:        #14171c;
+  --panel:     #1c2027;
+  --panel2:    #23282f;
+  --border:    #2e343d;
+  --text:      #d5dae1;
+  --text-dim:  #7b848f;
+  --accent:    #4c8dff;
+  --grid-1:    rgba(255,255,255,.05);
+  --grid-2:    rgba(255,255,255,.10);
+  --axis:      rgba(255,255,255,.18);
+  --sel:       #4c8dff;
+  --hover:     rgba(76,141,255,.45);
+}
+body.light{
+  --bg:        #f4f5f7;
+  --panel:     #ffffff;
+  --panel2:    #eef0f3;
+  --border:    #d7dbe1;
+  --text:      #1c2127;
+  --text-dim:  #6b7280;
+  --accent:    #2f6fed;
+  --grid-1:    rgba(0,0,0,.055);
+  --grid-2:    rgba(0,0,0,.11);
+  --axis:      rgba(0,0,0,.22);
+  --sel:       #2f6fed;
+  --hover:     rgba(47,111,237,.45);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{
+  background:var(--bg);color:var(--text);
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+#app{display:flex;flex-direction:column;height:100%}
+
+/* ---- トップバー ---- */
+#topbar{
+  position:relative;z-index:95;
+  flex:0 0 40px;display:flex;align-items:center;gap:14px;padding:0 12px;
+  background:var(--panel);border-bottom:1px solid var(--border);user-select:none;
+}
+#topbar .sep{width:1px;height:20px;background:var(--border)}
+#boardName{
+  background:transparent;border:1px solid transparent;color:var(--text);
+  font:inherit;font-weight:600;padding:3px 7px;border-radius:5px;width:190px;
+}
+#boardName:hover{border-color:var(--border)}
+#boardName:focus{outline:none;border-color:var(--accent);background:var(--bg)}
+.tb-btn{
+  background:transparent;border:1px solid var(--border);color:var(--text-dim);
+  font:inherit;padding:3px 9px;border-radius:5px;cursor:pointer;white-space:nowrap;
+}
+.tb-btn:hover{color:var(--text);border-color:#3d4551}
+.tb-btn.on{color:var(--accent);border-color:var(--accent);background:rgba(76,141,255,.10)}
+.tb-label{color:var(--text-dim);font-size:12px;white-space:nowrap}
+#saveStatus{opacity:1;transition:opacity .6s ease;font-variant-numeric:tabular-nums;min-width:52px}
+#saveStatus.fade{opacity:.35}
+.tb-val{color:var(--text);font-variant-numeric:tabular-nums;min-width:44px;display:inline-block}
+#spacer{flex:1}
+
+/* ---- 本体 ---- */
+#main{flex:1;display:flex;min-height:0}
+
+/* ---- 左ツールバー ---- */
+#toolbar{
+  flex:0 0 46px;background:var(--panel);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;user-select:none;
+}
+.tool{
+  position:relative;width:32px;height:32px;border-radius:7px;border:1px solid transparent;
+  background:transparent;color:var(--text-dim);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+}
+.tool:hover{background:var(--panel2);color:var(--text)}
+.tool.on{background:rgba(76,141,255,.15);color:var(--accent);border-color:rgba(76,141,255,.4)}
+.tool svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.tool .tip{
+  position:absolute;left:40px;top:50%;transform:translateY(-50%);
+  background:#000;color:#fff;padding:3px 8px;border-radius:5px;font-size:11px;
+  white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .1s;z-index:50;
+}
+.tool:hover .tip{opacity:.92}
+.tool-div{width:20px;height:1px;background:var(--border);margin:4px 0}
+
+/* ---- キャンバス ---- */
+#stage{flex:1;position:relative;min-width:0;overflow:hidden}
+#cv{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+.shape-edit{
+  position:absolute;outline:none;white-space:pre-wrap;word-break:break-word;
+  caret-color:#4c8dff;line-height:1.3;
+}
+.shape-edit.text-edit{
+  background:rgba(20,23,28,.35);border:1px dashed rgba(76,141,255,.6);border-radius:3px;padding:1px 3px;
+}
+.shape-edit.note-edit{border:1px dashed rgba(0,0,0,.35);border-radius:10px}
+
+/* ---- 右インスペクタ ---- */
+#inspector{
+  flex:0 0 216px;background:var(--panel);border-left:1px solid var(--border);
+  overflow-y:auto;padding:12px;user-select:none;
+}
+#inspector.collapsed{flex-basis:0;padding:0;overflow:hidden;border-left:none}
+.ins-h{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--text-dim);
+  text-transform:uppercase;margin:0 0 9px}
+.ins-sec{margin-bottom:18px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
+.row label{color:var(--text-dim);font-size:12px;flex:0 0 auto}
+.row input[type=number],.row input[type=text]{
+  width:78px;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  font:inherit;font-variant-numeric:tabular-nums;padding:3px 6px;border-radius:5px;text-align:right;
+}
+.row input[type=number]:focus,.row input[type=text]:focus{outline:none;border-color:var(--accent)}
+.row input[type=color]{
+  width:34px;height:24px;padding:0;border:1px solid var(--border);border-radius:5px;
+  background:var(--bg);cursor:pointer;
+}
+.ohlc-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.ohlc-cell{display:flex;align-items:center;gap:5px}
+.ohlc-cell span{color:var(--text-dim);font-weight:700;font-size:11px;width:11px}
+.ohlc-cell input{
+  width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);
+  font:inherit;font-variant-numeric:tabular-nums;padding:3px 5px;border-radius:5px;text-align:right;
+}
+.ohlc-cell input:focus{outline:none;border-color:var(--accent)}
+.badge{display:inline-block;padding:2px 7px;border-radius:99px;font-size:11px;font-weight:600}
+.badge.bull{background:rgba(38,166,154,.18);color:#4dd0c4}
+.badge.bear{background:rgba(239,83,80,.18);color:#ff8a87}
+.btn-full{
+  display:block;width:100%;margin-top:7px;background:var(--panel2);border:1px solid var(--border);
+  color:var(--text);font:inherit;padding:6px;border-radius:6px;cursor:pointer;
+}
+.btn-full:hover{border-color:#3d4551;background:#2a3038}
+.hintline{color:var(--text-dim);font-size:11px;line-height:1.7}
+.empty{color:var(--text-dim);font-size:12px;text-align:center;padding:26px 6px;line-height:1.9}
+
+/* ---- ヘルプ ---- */
+#help{
+  position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100;
+  display:flex;align-items:center;justify-content:center;
+}
+#help[hidden]{display:none}
+#help .box{
+  background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  padding:22px 26px;max-width:640px;max-height:82vh;overflow-y:auto;
+}
+#help h2{font-size:15px;margin-bottom:14px}
+#help table{border-collapse:collapse;font-size:12px}
+#help td{padding:3px 16px 3px 0;vertical-align:top}
+#help td.k{color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+#help .grp{color:var(--text-dim);font-weight:700;padding-top:12px;font-size:11px;
+  letter-spacing:.05em;text-transform:uppercase}
+
+/* ---- ボード一覧ドロワー ---- */
+/* トップバー（高さ40px）はドロワーより手前に表示し、☰ ボタンを開閉トグルとして常に押せるようにする */
+#boardDrawer{position:fixed;left:0;right:0;top:40px;bottom:0;z-index:90;display:none}
+#boardDrawer.open{display:block}
+#boardDrawer .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5)}
+#boardDrawer .panel{
+  position:absolute;left:0;top:0;bottom:0;width:300px;background:var(--panel);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+  box-shadow:8px 0 24px rgba(0,0,0,.35);
+}
+#boardDrawer .panel-head{padding:14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+#boardDrawer .panel-head h3{font-size:14px;font-weight:700}
+#boardList{flex:1;overflow-y:auto;padding:8px}
+.board-item{padding:10px;border-radius:8px;margin-bottom:4px;cursor:pointer;border:1px solid transparent}
+.board-item:hover{background:var(--panel2)}
+.board-item.current{border-color:var(--accent);background:rgba(76,141,255,.08)}
+.board-item .bi-name{font-weight:600;font-size:13px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.board-item input[type=text]{background:var(--bg);border:1px solid var(--accent);border-radius:4px;color:var(--text);font:inherit;font-weight:600;font-size:13px;padding:2px 4px;width:100%;margin-bottom:2px}
+.board-item .bi-meta{font-size:11px;color:var(--text-dim)}
+.board-item .bi-actions{display:flex;gap:4px;margin-top:6px}
+.board-item .bi-actions button{background:transparent;border:1px solid var(--border);color:var(--text-dim);font-size:11px;padding:2px 7px;border-radius:5px;cursor:pointer}
+.board-item .bi-actions button:hover{color:var(--text);border-color:#3d4551}
+.board-item .bi-actions button.danger:hover{color:#ff8a87;border-color:#ff8a87}
+.board-item .bi-actions button:disabled{opacity:.35;cursor:not-allowed}
+.board-item .bi-actions button:disabled:hover{color:var(--text-dim);border-color:var(--border)}
+#boardDrawer .panel-foot{border-top:1px solid var(--border);padding:10px;display:flex;flex-direction:column;gap:6px}
+#boardDrawer .panel-foot .pf-row{display:flex;gap:6px}
+#boardDrawer .panel-foot .pf-row .tb-btn{flex:1;text-align:center}
+#confirmModal,#msgModal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:110;display:flex;align-items:center;justify-content:center}
+#confirmModal[hidden],#msgModal[hidden]{display:none}
+#confirmModal .box,#msgModal .box{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px 24px;max-width:340px}
+#confirmModal p,#msgModal p{font-size:13px;line-height:1.6;margin-bottom:16px;white-space:pre-line}
+#msgModal h3{font-size:14px;margin-bottom:10px}
+#confirmModal .confirm-actions,#msgModal .confirm-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.tb-btn.danger{color:#ff8a87;border-color:rgba(255,138,135,.4)}
+.tb-btn.danger:hover{background:rgba(255,83,80,.12)}
+#stage.drag-over::after{
+  content:'JSON をドロップして読み込み';
+  position:absolute;inset:8px;border:2px dashed var(--accent);border-radius:10px;
+  background:rgba(76,141,255,.08);display:flex;align-items:center;justify-content:center;
+  color:var(--accent);font-size:14px;font-weight:600;pointer-events:none;z-index:40;
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button class="tb-btn" id="btnBoards" title="ボード一覧">☰</button>
+    <input id="boardName" value="無題のボード" spellcheck="false">
+    <div class="sep"></div>
+    <button class="tb-btn on" id="btnSnap" title="グリッドスナップ (Alt で一時解除)">グリッド</button>
+    <span class="tb-label">幅 <span class="tb-val" id="lblGrid">20</span></span>
+    <div class="sep"></div>
+    <button class="tb-btn" id="btnZoomOut">−</button>
+    <span class="tb-val" id="lblZoom" style="text-align:center;cursor:pointer" title="クリックで 100% に戻す (Shift+0)">100%</span>
+    <button class="tb-btn" id="btnZoomIn">＋</button>
+    <button class="tb-btn" id="btnFit" title="全体にフィット (Shift+1)">フィット</button>
+    <div id="spacer"></div>
+    <span class="tb-label" id="lblCount">0 オブジェクト</span>
+    <span class="tb-label" id="saveStatus">保存済</span>
+    <div class="sep"></div>
+    <button class="tb-btn" id="btnHelp" title="ショートカット (?)">?</button>
+  </header>
+
+  <div id="main">
+    <nav id="toolbar"></nav>
+    <div id="stage"><canvas id="cv"></canvas></div>
+    <aside id="inspector"></aside>
+  </div>
+</div>
+
+<div id="help" hidden><div class="box">
+  <h2>ショートカット</h2>
+  <table>
+    <tr><td class="grp" colspan="2">ツール</td></tr>
+    <tr><td class="k">V</td><td>選択</td></tr>
+    <tr><td class="k">H / Space長押し</td><td>ハンド（パン）</td></tr>
+    <tr><td class="k">K</td><td>ローソク足</td></tr>
+    <tr><td class="k">P</td><td>ペン（フリーハンド）</td></tr>
+    <tr><td class="k">L</td><td>直線</td></tr>
+    <tr><td class="k">A</td><td>矢印</td></tr>
+    <tr><td class="k">Shift + L</td><td>水平ライン</td></tr>
+    <tr><td class="k">R</td><td>矩形ゾーン</td></tr>
+    <tr><td class="k">T</td><td>テキスト</td></tr>
+    <tr><td class="k">N</td><td>付箋</td></tr>
+    <tr><td class="k">F</td><td>フィボナッチ・リトレースメント</td></tr>
+    <tr><td class="grp" colspan="2">ビュー</td></tr>
+    <tr><td class="k">ホイール</td><td>上下パン</td></tr>
+    <tr><td class="k">Shift + ホイール</td><td>左右パン</td></tr>
+    <tr><td class="k">Ctrl/⌘ + ホイール</td><td>カーソル中心にズーム</td></tr>
+    <tr><td class="k">中ボタンドラッグ</td><td>パン</td></tr>
+    <tr><td class="k">Shift + 1</td><td>全体にフィット</td></tr>
+    <tr><td class="k">Shift + 0 / ズーム率クリック</td><td>ズーム 100%</td></tr>
+    <tr><td class="grp" colspan="2">ローソク足</td></tr>
+    <tr><td class="k">ドラッグ</td><td>高値→安値を決めて作成</td></tr>
+    <tr><td class="k">O / H / L / C ハンドル</td><td>左辺=始値・上=高値・下=安値・右辺=終値</td></tr>
+    <tr><td class="k">Enter</td><td>右隣に複製</td></tr>
+    <tr><td class="k">Shift + Enter</td><td>左隣に複製</td></tr>
+    <tr><td class="k">Ctrl + Shift + A</td><td>X 方向に等間隔整列</td></tr>
+    <tr><td class="grp" colspan="2">編集</td></tr>
+    <tr><td class="k">Shift + クリック</td><td>選択に追加 / 除外</td></tr>
+    <tr><td class="k">Ctrl + A</td><td>全選択</td></tr>
+    <tr><td class="k">Delete / Backspace</td><td>削除</td></tr>
+    <tr><td class="k">Ctrl + C / V</td><td>コピー / ペースト</td></tr>
+    <tr><td class="k">Ctrl + D</td><td>その場複製</td></tr>
+    <tr><td class="k">Alt + ドラッグ</td><td>複製しながら移動</td></tr>
+    <tr><td class="k">矢印キー</td><td>1グリッド移動（Shift で 10）</td></tr>
+    <tr><td class="k">Ctrl + Z / Ctrl + Shift + Z</td><td>Undo / Redo</td></tr>
+    <tr><td class="k">Ctrl + ] / Ctrl + [</td><td>最前面へ / 最背面へ</td></tr>
+    <tr><td class="k">Alt（押しながら）</td><td>スナップ一時解除</td></tr>
+    <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
+    <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
+    <tr><td class="grp" colspan="2">ボード / データ</td></tr>
+    <tr><td class="k">☰</td><td>ボード一覧（新規・複製・リネーム・削除）</td></tr>
+    <tr><td class="k">JSON をキャンバスへドロップ</td><td>読み込み（ファイル選択ボタンも可）</td></tr>
+    <tr><td class="k">?</td><td>このヘルプの表示 / 非表示</td></tr>
+  </table>
+</div></div>
+
+<div id="boardDrawer">
+  <div class="backdrop"></div>
+  <div class="panel">
+    <div class="panel-head">
+      <h3>ボード一覧</h3>
+      <button class="tb-btn" id="btnNewBoard">＋ 新規作成</button>
+    </div>
+    <div id="boardList"></div>
+    <div class="panel-foot">
+      <div class="pf-row">
+        <button class="tb-btn" id="btnExportCurrent">現在のボードを書き出し</button>
+        <button class="tb-btn" id="btnExportAll">すべて書き出し</button>
+      </div>
+      <button class="tb-btn" id="btnImport">JSON を読み込み…</button>
+      <input type="file" id="importFileInput" accept="application/json,.json" hidden>
+    </div>
+  </div>
+</div>
+
+<div id="confirmModal" hidden><div class="box">
+  <p id="confirmMsg"></p>
+  <div class="confirm-actions">
+    <button class="tb-btn" id="confirmCancel">キャンセル</button>
+    <button class="tb-btn danger" id="confirmOk">削除</button>
+  </div>
+</div></div>
+
+<div id="msgModal" hidden><div class="box">
+  <h3 id="msgTitle" hidden></h3>
+  <p id="msgText"></p>
+  <div class="confirm-actions" id="msgActions"></div>
+</div></div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   0. ユーティリティ
+   ========================================================================== */
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const uid = () => Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4);
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* ==========================================================================
+   1. データモデル
+   --------------------------------------------------------------------------
+   ■ 座標系の約束（最重要）
+     - オブジェクトは「ワールド座標」で位置を持つ。
+     - ただし Candle の o/h/l/c は「価格値」で保持する。
+       Canvas の Y は下向き正、価格は上が高いので、変換は下記 2 関数に閉じ込める。
+           worldY = -price      … PY()
+           price  = -worldY     … YP()
+       これにより不変条件が自然な形になる:  h >= max(o,c) >= min(o,c) >= l
+     - 他所で符号をひっくり返さないこと。
+   ========================================================================== */
+const PY = p => -p;   // price -> worldY
+const YP = y => -y;   // worldY -> price
+
+function newBoard(){
+  return {
+    id: uid(),
+    name: '無題のボード',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    camera: { x:-400, y:-300, zoom:1 },
+    settings: {
+      grid: 20,
+      snap: true,
+      candleWidth: 12,
+      bullColor: '#26a69a',
+      bearColor: '#ef5350',
+      bodyFill: 'solid',   // 'solid' | 'hollow'
+      theme: 'dark',
+    },
+    objects: [],           // 配列順 = 重ね順（末尾が最前面）
+  };
+}
+
+let board = newBoard();
+
+/* UI 状態（保存対象外） */
+const ui = {
+  tool: 'select',
+  selection: new Set(),
+  hoverId: null,
+  hoverHandle: null,
+  spaceHeld: false,
+  altHeld: false,
+  drag: null,          // { mode, ... }
+  mouseWorld: {x:0,y:0},
+  clipboard: [],
+  editing: null,       // { id, div } — text/note の contenteditable 編集中はここに入る
+};
+
+/* ==========================================================================
+   2. 座標変換 / スナップ
+   ========================================================================== */
+const cam = () => board.camera;
+function s2w(sx,sy){ const c=cam(); return { x: c.x + sx/c.zoom, y: c.y + sy/c.zoom }; }
+function w2s(wx,wy){ const c=cam(); return { x: (wx-c.x)*c.zoom, y: (wy-c.y)*c.zoom }; }
+
+/** スナップ有効判定: 設定 ON かつ Alt 非押下 */
+const snapOn = () => board.settings.snap !== ui.altHeld;
+function snapV(v){ const g=board.settings.grid; return snapOn() ? Math.round(v/g)*g : v; }
+/** ワールド長さの許容誤差（スクリーン px 指定） */
+const tolW = px => px / cam().zoom;
+
+/* ==========================================================================
+   3. Undo / Redo
+   --------------------------------------------------------------------------
+   スナップショット方式。ドラッグ中は積まず、確定時に「変化があれば」1回だけ積む。
+   ========================================================================== */
+const history = { undo:[], redo:[], limit:50 };
+let pendingUndo = null;
+
+function beginAction(){ if(pendingUndo===null) pendingUndo = clone(board.objects); }
+function commitAction(){
+  if(pendingUndo===null) return;
+  const before = pendingUndo; pendingUndo = null;
+  if(JSON.stringify(before) === JSON.stringify(board.objects)) return;
+  history.undo.push(before);
+  if(history.undo.length > history.limit) history.undo.shift();
+  history.redo.length = 0;
+  touch();
+}
+function cancelAction(){ pendingUndo = null; }
+/** 単発の変更用: beginAction + 変更 + commitAction をまとめる */
+function act(fn){ beginAction(); fn(); commitAction(); requestRender(); syncUI(); }
+
+function undo(){
+  if(!history.undo.length) return;
+  history.redo.push(clone(board.objects));
+  board.objects = history.undo.pop();
+  pruneSelection(); touch(); requestRender(); syncUI();
+}
+function redo(){
+  if(!history.redo.length) return;
+  history.undo.push(clone(board.objects));
+  board.objects = history.redo.pop();
+  pruneSelection(); touch(); requestRender(); syncUI();
+}
+function pruneSelection(){
+  const ids = new Set(board.objects.map(o=>o.id));
+  for(const id of [...ui.selection]) if(!ids.has(id)) ui.selection.delete(id);
+}
+
+/* ==========================================================================
+   4. Shape レジストリ
+   --------------------------------------------------------------------------
+   Phase 4 以降でツールを足すときは、ここに 1 エントリ追加するだけで
+   描画・ヒットテスト・移動・バウンディングボックスが全て機能するようにしてある。
+     bbox(s)                  -> {x,y,w,h}  ワールド座標
+     draw(ctx,s)              -> ワールド座標系のまま描画（transform 適用済み）
+     hit(s, wpt, tol)         -> boolean
+     move(s, dx, dy)          -> ワールド差分で移動
+     handles(s)               -> [{id,x,y}]  ワールド座標（選択中のみ表示）
+     dragHandle(s, id, wpt)   -> ハンドルドラッグ処理
+   ========================================================================== */
+const Shapes = {};
+
+/* ---------- Candle ---------- */
+function normalizeCandle(k){
+  k.h = Math.max(k.h, k.o, k.c);
+  k.l = Math.min(k.l, k.o, k.c);
+  return k;
+}
+const cw = k => (k.w != null ? k.w : board.settings.candleWidth);
+const isBull = k => k.c >= k.o;
+
+function makeCandle(x, pHigh, pLow, bullish){
+  const g = board.settings.grid;
+  let h = Math.max(pHigh,pLow), l = Math.min(pHigh,pLow);
+  if(h - l < g){ const m=(h+l)/2; h = m + g*2; l = m - g*2; }
+  const range = h - l;
+  let o, c;
+  if(bullish){ o = l + range*0.30; c = l + range*0.70; }
+  else       { o = l + range*0.70; c = l + range*0.30; }
+  o = clamp(snapV(o), l, h);
+  c = clamp(snapV(c), l, h);
+  return normalizeCandle({ id:uid(), type:'candle', x, o, h, l, c });
+}
+
+Shapes.candle = {
+  bbox(k){
+    const w = cw(k);
+    return { x: k.x - w/2, y: PY(k.h), w: w, h: k.h - k.l };
+  },
+  draw(ctx, k){
+    const z = cam().zoom, w = cw(k), half = w/2;
+    const bull = isBull(k);
+    const col = bull ? (k.style?.bull || board.settings.bullColor)
+                     : (k.style?.bear || board.settings.bearColor);
+    const top = Math.max(k.o,k.c), bot = Math.min(k.o,k.c);
+
+    // ヒゲ
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1.6, 1/z);
+    ctx.beginPath();
+    ctx.moveTo(k.x, PY(k.h));
+    ctx.lineTo(k.x, PY(k.l));
+    ctx.stroke();
+
+    // 実体
+    const bodyH = top - bot;
+    if(bodyH * z < 1.2){
+      // 同事線: 高さ最小 1px の横線として描画
+      const t = Math.max(1.6, 1.2/z);
+      ctx.fillStyle = col;
+      ctx.fillRect(k.x-half, PY(top)-t/2, w, t);
+    } else if(board.settings.bodyFill === 'hollow' && bull){
+      ctx.fillStyle = themeColors.bg;   // 背景色をくり抜くので、テーマ切替に自動追従させる（ハードコード禁止）
+      ctx.fillRect(k.x-half, PY(top), w, bodyH);
+      ctx.lineWidth = Math.max(1.6, 1/z);
+      ctx.strokeStyle = col;
+      ctx.strokeRect(k.x-half, PY(top), w, bodyH);
+    } else {
+      ctx.fillStyle = col;
+      ctx.fillRect(k.x-half, PY(top), w, bodyH);
+    }
+  },
+  hit(k, p, tol){
+    const w = cw(k), half = w/2;
+    const price = YP(p.y);
+    // 実体
+    const top = Math.max(k.o,k.c), bot = Math.min(k.o,k.c);
+    if(Math.abs(p.x - k.x) <= half + tol && price <= top + tol && price >= bot - tol) return true;
+    // ヒゲ
+    if(Math.abs(p.x - k.x) <= tol && price <= k.h + tol && price >= k.l - tol) return true;
+    return false;
+  },
+  move(k, dx, dy){
+    k.x += dx;
+    const dp = -dy;                 // worldY 差分 -> 価格差分
+    k.o += dp; k.h += dp; k.l += dp; k.c += dp;
+  },
+  handles(k){
+    const half = cw(k)/2;
+    return [
+      { id:'H', x:k.x,        y:PY(k.h) },
+      { id:'L', x:k.x,        y:PY(k.l) },
+      { id:'O', x:k.x - half, y:PY(k.o) },
+      { id:'C', x:k.x + half, y:PY(k.c) },
+    ];
+  },
+  dragHandle(k, id, p){
+    const price = snapV(YP(p.y));
+    if(id === 'H') k.h = Math.max(price, k.o, k.c);
+    else if(id === 'L') k.l = Math.min(price, k.o, k.c);
+    else if(id === 'O') k.o = price;
+    else if(id === 'C') k.c = price;
+    normalizeCandle(k);
+  },
+};
+
+/* ==========================================================================
+   4x. 共通描画スタイル / 幾何ヘルパ（Phase 4 の描画ツールが共有する）
+   ========================================================================== */
+const DEFAULT_STYLE = { stroke:'#4c8dff', width:2, opacity:1, dash:false, fill:'#4c8dff', fillOpacity:.15 };
+const styleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
+/** ストローク系の共通設定を適用して返す。呼び出し側は必ず ctx.save()/restore() で囲むこと */
+function applyStrokeStyle(ctx, s){
+  const st = styleOf(s);
+  ctx.strokeStyle = st.stroke;
+  ctx.globalAlpha = st.opacity;
+  ctx.lineWidth = Math.max(st.width, 1/cam().zoom);
+  ctx.setLineDash(st.dash ? [6/cam().zoom, 4/cam().zoom] : []);
+  return st;
+}
+function distToSegment(px,py, x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1;
+  const lenSq = dx*dx+dy*dy;
+  let t = lenSq ? ((px-x1)*dx + (py-y1)*dy)/lenSq : 0;
+  t = clamp(t,0,1);
+  return Math.hypot(px-(x1+t*dx), py-(y1+t*dy));
+}
+/** Shift 押下時の角度スナップ（45度刻み）。始点からの距離は保つ */
+function snapAngle45(x1,y1,x2,y2){
+  const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy);
+  if(len < 1e-6) return {x2,y2};
+  const step = Math.PI/4;
+  const ang = Math.round(Math.atan2(dy,dx)/step)*step;
+  return { x2:x1+Math.cos(ang)*len, y2:y1+Math.sin(ang)*len };
+}
+function drawArrowHead(ctx, tipX, tipY, dirAng, size){
+  const spread = Math.PI/7.5;
+  const a1 = dirAng + Math.PI - spread, a2 = dirAng - Math.PI + spread;
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX+Math.cos(a1)*size, tipY+Math.sin(a1)*size);
+  ctx.lineTo(tipX+Math.cos(a2)*size, tipY+Math.sin(a2)*size);
+  ctx.closePath();
+  ctx.fill();
+}
+function roundRectPath(ctx,x,y,w,h,r){
+  r = Math.max(0, Math.min(r, Math.abs(w)/2, Math.abs(h)/2));
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+/** 文字単位で折り返す（分かち書きのない日本語でも自然に改行される） */
+function wrapText(ctx, text, x, y, maxWidth, lineHeight){
+  const paragraphs = String(text).split('\n');
+  let cy = y;
+  for(const para of paragraphs){
+    if(para === ''){ cy += lineHeight; continue; }
+    let line = '';
+    for(const ch of para){
+      const test = line + ch;
+      if(line && ctx.measureText(test).width > maxWidth){ ctx.fillText(line, x, cy); cy += lineHeight; line = ch; }
+      else line = test;
+    }
+    if(line){ ctx.fillText(line, x, cy); cy += lineHeight; }
+  }
+  return cy;
+}
+function penBBox(pts){
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(let i=0;i<pts.length;i+=2){
+    const px=pts[i], py=pts[i+1];
+    if(px<x0)x0=px; if(px>x1)x1=px; if(py<y0)y0=py; if(py>y1)y1=py;
+  }
+  if(!isFinite(x0)) return {x:0,y:0,w:0,h:0};
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+const NOTE_COLORS = ['#f6d365','#84fab0','#a6c1ee','#fbc2eb','#fda085','#c2c2c2'];
+function noteTextColor(bg){
+  const c = (bg||'#f6d365').replace('#','');
+  const r=parseInt(c.slice(0,2),16), g=parseInt(c.slice(2,4),16), b=parseInt(c.slice(4,6),16);
+  const lum = (0.299*r+0.587*g+0.114*b)/255;
+  return lum > 0.6 ? '#1a1a1a' : '#ffffff';
+}
+
+/* ---------- Line ---------- */
+function makeLine(x1,y1,x2,y2){ return { id:uid(), type:'line', x1,y1,x2,y2, style:{...DEFAULT_STYLE} }; }
+Shapes.line = {
+  bbox(s){
+    const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2), y0=Math.min(s.y1,s.y2), y1=Math.max(s.y1,s.y2);
+    const pad = Math.max(4, styleOf(s).width);
+    return { x:x0-pad, y:y0-pad, w:(x1-x0)+pad*2, h:(y1-y0)+pad*2 };
+  },
+  draw(ctx, s){
+    ctx.save();
+    applyStrokeStyle(ctx, s);
+    ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
+    ctx.restore();
+  },
+  hit(s, p, tol){ return distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol; },
+  move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
+  dragHandle(s, id, p){
+    const x=snapV(p.x), y=snapV(p.y);
+    if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
+  },
+};
+
+/* ---------- Arrow（line と大半を共有） ---------- */
+function makeArrow(x1,y1,x2,y2){ return { id:uid(), type:'arrow', x1,y1,x2,y2, head:'end', style:{...DEFAULT_STYLE} }; }
+Shapes.arrow = {
+  bbox(s){
+    const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2), y0=Math.min(s.y1,s.y2), y1=Math.max(s.y1,s.y2);
+    const pad = Math.max(16, styleOf(s).width);
+    return { x:x0-pad, y:y0-pad, w:(x1-x0)+pad*2, h:(y1-y0)+pad*2 };
+  },
+  draw(ctx, s){
+    ctx.save();
+    const st = applyStrokeStyle(ctx, s);
+    ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
+    const size = Math.max(10, 12/cam().zoom);
+    ctx.setLineDash([]);
+    ctx.fillStyle = st.stroke;
+    drawArrowHead(ctx, s.x2, s.y2, Math.atan2(s.y2-s.y1, s.x2-s.x1), size);
+    if(s.head === 'both') drawArrowHead(ctx, s.x1, s.y1, Math.atan2(s.y1-s.y2, s.x1-s.x2), size);
+    ctx.restore();
+  },
+  hit: (s,p,tol) => distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol,
+  move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
+  dragHandle(s, id, p){
+    const x=snapV(p.x), y=snapV(p.y);
+    if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
+  },
+};
+
+/* ---------- 水平ライン（価格空間を使う。y フィールドの中身は「価格」） ---------- */
+function makeHLine(price){ return { id:uid(), type:'hline', y:price, style:{...DEFAULT_STYLE} }; }
+Shapes.hline = {
+  bbox(s){ const c=cam(); return { x:c.x, y:PY(s.y), w:(W||1000)/c.zoom, h:0 }; },
+  draw(ctx, s){
+    const c = cam(), x0=c.x, x1=c.x+W/c.zoom;
+    ctx.save();
+    applyStrokeStyle(ctx, s);
+    ctx.beginPath(); ctx.moveTo(x0,PY(s.y)); ctx.lineTo(x1,PY(s.y)); ctx.stroke();
+    ctx.restore();
+  },
+  hit(s, p, tol){ return Math.abs(p.y - PY(s.y)) <= tol; },
+  move(s, dx, dy){ s.y += -dy; },   // dy はワールドY差分 -> 価格差分は符号反転（PY/YPと同じ規則）
+  handles(s){ const c=cam(); return [ { id:'p', x:c.x+(W/c.zoom)/2, y:PY(s.y) } ]; },
+  dragHandle(s, id, p){ s.y = snapV(YP(p.y)); },
+};
+
+/* ---------- 矩形ゾーン ---------- */
+function makeRect(x,y,w,h){ return { id:uid(), type:'rect', x,y,w,h, style:{...DEFAULT_STYLE} }; }
+Shapes.rect = {
+  bbox(s){ const pad=Math.max(4, styleOf(s).width); return {x:s.x-pad,y:s.y-pad,w:s.w+pad*2,h:s.h+pad*2}; },
+  draw(ctx, s){
+    ctx.save();
+    const st = styleOf(s);
+    ctx.globalAlpha = st.fillOpacity;
+    ctx.fillStyle = st.fill;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    ctx.globalAlpha = st.opacity;
+    ctx.strokeStyle = st.stroke;
+    ctx.lineWidth = Math.max(st.width, 1/cam().zoom);
+    ctx.setLineDash(st.dash ? [6/cam().zoom,4/cam().zoom] : []);
+    ctx.strokeRect(s.x, s.y, s.w, s.h);
+    ctx.restore();
+  },
+  hit(s, p, tol){ return p.x>=s.x-tol && p.x<=s.x+s.w+tol && p.y>=s.y-tol && p.y<=s.y+s.h+tol; },
+  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  handles(s){
+    const {x,y,w,h}=s;
+    return [ {id:'nw',x,y},{id:'n',x:x+w/2,y},{id:'ne',x:x+w,y},{id:'e',x:x+w,y:y+h/2},
+             {id:'se',x:x+w,y:y+h},{id:'s',x:x+w/2,y:y+h},{id:'sw',x,y:y+h},{id:'w',x,y:y+h/2} ];
+  },
+  dragHandle(s, id, p){
+    const x2=snapV(p.x), y2=snapV(p.y);
+    let {x,y,w,h} = s;
+    const right=x+w, bottom=y+h;
+    if(id.includes('w')){ const nx=Math.min(x2,right); w=right-nx; x=nx; }
+    if(id.includes('e')){ const nx=Math.max(x2,x);     w=nx-x; }
+    if(id.includes('n')){ const ny=Math.min(y2,bottom); h=bottom-ny; y=ny; }
+    if(id.includes('s')){ const ny=Math.max(y2,y);      h=ny-y; }
+    s.x=x; s.y=y; s.w=Math.max(w,1); s.h=Math.max(h,1);
+  },
+};
+
+/* ---------- ペン（フリーハンド。原点 x,y + 相対点列 pts） ---------- */
+function makePen(x,y,pts){ return { id:uid(), type:'pen', x, y, pts:pts.slice(), bb:penBBox(pts), style:{...DEFAULT_STYLE} }; }
+/** ペンストロークの Path2D キャッシュ（7.2）。
+ *  pts 配列そのものをキーにした WeakMap で持つ: ペンの点列は作成後に一切書き換わらない
+ *  （handles を持たず、move() は s.x/s.y のオフセットを動かすだけ）ため、
+ *  「同じ pts 配列インスタンス＝内容も同じ」が保証され、無効化ロジックが一切不要になる。
+ *  duplicate/paste/undo は必ず clone() で新しい配列を作るので、古いキャッシュを誤って
+ *  再利用してしまうことも起こり得ない。 */
+const penPathCache = new WeakMap();
+function getPenPath(pts){
+  let p = penPathCache.get(pts);
+  if(p) return p;
+  p = new Path2D();
+  p.moveTo(pts[0], pts[1]);
+  for(let i=2; i<pts.length-2; i+=2){
+    const cx1=pts[i], cy1=pts[i+1], nx=pts[i+2], ny=pts[i+3];
+    p.quadraticCurveTo(cx1, cy1, (cx1+nx)/2, (cy1+ny)/2);
+  }
+  p.lineTo(pts[pts.length-2], pts[pts.length-1]);
+  penPathCache.set(pts, p);
+  return p;
+}
+Shapes.pen = {
+  bbox(s){ const pad=Math.max(4, styleOf(s).width); return {x:s.x+s.bb.x-pad, y:s.y+s.bb.y-pad, w:s.bb.w+pad*2, h:s.bb.h+pad*2}; },
+  draw(ctx, s){
+    const pts = s.pts;
+    ctx.save();
+    const st = applyStrokeStyle(ctx, s);
+    if(pts.length < 4){
+      ctx.setLineDash([]);
+      ctx.fillStyle = st.stroke;
+      ctx.beginPath(); ctx.arc(s.x+pts[0], s.y+pts[1], st.width/2, 0, Math.PI*2); ctx.fill();
+      ctx.restore(); return;
+    }
+    ctx.translate(s.x, s.y);
+    ctx.stroke(getPenPath(pts));
+    ctx.restore();
+  },
+  hit(s, p, tol){
+    const pts = s.pts, lx = p.x-s.x, ly = p.y-s.y;
+    if(lx < s.bb.x-tol || lx > s.bb.x+s.bb.w+tol || ly < s.bb.y-tol || ly > s.bb.y+s.bb.h+tol) return false;
+    for(let i=0;i<pts.length-2;i+=2) if(distToSegment(lx,ly, pts[i],pts[i+1],pts[i+2],pts[i+3]) <= tol) return true;
+    return pts.length>=2 && Math.hypot(lx-pts[0], ly-pts[1]) <= tol;
+  },
+  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  // handles なし（フリーハンドのため部分編集はサポートしない。全体移動のみ）
+};
+
+/* ---------- テキスト ---------- */
+function makeText(x,y){ return { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', style:{...DEFAULT_STYLE} }; }
+Shapes.text = {
+  bbox(s){
+    const lines = (s.text||'').split('\n');
+    const fs = s.fontSize||16;
+    // 簡易計測: canvas 2D の measureText を使う（オフスクリーン ctx を共有）
+    ctx.save(); ctx.font = `${fs}px -apple-system,sans-serif`;
+    let w = 0; for(const ln of lines) w = Math.max(w, ctx.measureText(ln||' ').width);
+    ctx.restore();
+    const h = Math.max(fs*1.3, lines.length*fs*1.3);
+    return { x:s.x, y:s.y, w:Math.max(w,20), h };
+  },
+  draw(ctx, s){
+    if(ui.editing && ui.editing.id===s.id) return;   // 編集中は overlay 側に表示を任せる
+    const st = styleOf(s);
+    ctx.save();
+    ctx.globalAlpha = st.opacity;
+    ctx.fillStyle = st.stroke;
+    ctx.font = `${s.fontSize||16}px -apple-system,sans-serif`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = s.align||'left';
+    const b = Shapes.text.bbox(s);
+    const ax = s.align==='center' ? s.x+b.w/2 : s.align==='right' ? s.x+b.w : s.x;
+    wrapText(ctx, s.text||'', ax, s.y, 100000, (s.fontSize||16)*1.3);
+    ctx.restore();
+  },
+  hit(s, p, tol){ const b=Shapes.text.bbox(s); return p.x>=b.x-tol && p.x<=b.x+b.w+tol && p.y>=b.y-tol && p.y<=b.y+b.h+tol; },
+  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+};
+
+/* ---------- 付箋 ---------- */
+function makeNote(x,y,w,h){ return { id:uid(), type:'note', x, y, w, h, text:'', bg:NOTE_COLORS[0] }; }
+Shapes.note = {
+  bbox(s){ return { x:s.x, y:s.y, w:s.w, h:s.h }; },
+  draw(ctx, s){
+    if(ui.editing && ui.editing.id===s.id) return;
+    ctx.save();
+    roundRectPath(ctx, s.x, s.y, s.w, s.h, 10);
+    ctx.fillStyle = s.bg || NOTE_COLORS[0];
+    ctx.fill();
+    ctx.clip();
+    ctx.fillStyle = noteTextColor(s.bg);
+    ctx.font = '13px -apple-system,sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';   // 明示しておく（他描画からの ctx 状態漏れに対する保険）
+    wrapText(ctx, s.text||'', s.x+8, s.y+8, s.w-16, 17);
+    ctx.restore();
+  },
+  hit(s, p, tol){ return p.x>=s.x-tol && p.x<=s.x+s.w+tol && p.y>=s.y-tol && p.y<=s.y+s.h+tol; },
+  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  handles(s){ const {x,y,w,h}=s; return [ {id:'nw',x,y},{id:'ne',x:x+w,y},{id:'se',x:x+w,y:y+h},{id:'sw',x,y:y+h} ]; },
+  dragHandle(s, id, p){
+    const x2=snapV(p.x), y2=snapV(p.y);
+    let {x,y,w,h}=s; const right=x+w, bottom=y+h;
+    if(id.includes('w')){ const nx=Math.min(x2,right); w=right-nx; x=nx; }
+    if(id.includes('e')){ const nx=Math.max(x2,x); w=nx-x; }
+    if(id.includes('n')){ const ny=Math.min(y2,bottom); h=bottom-ny; y=ny; }
+    if(id.includes('s')){ const ny=Math.max(y2,y); h=ny-y; }
+    s.x=x; s.y=y; s.w=Math.max(w,40); s.h=Math.max(h,30);
+  },
+};
+
+/* ---------- フィボナッチ・リトレースメント ---------- */
+const FIB_STANDARD_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const FIB_EXTEND_LEVELS = [1.272, 1.618];
+function makeFib(x1,y1,x2,y2){
+  return { id:uid(), type:'fib', x1,y1,x2,y2, levels:FIB_STANDARD_LEVELS.slice(), extend:false, showPrice:true, style:{...DEFAULT_STYLE} };
+}
+/** 表示対象レベル一覧（拡張ON時は 1.272/1.618 も加え、重複排除してソート） */
+function fibLevels(s){
+  const lv = s.extend ? s.levels.concat(FIB_EXTEND_LEVELS) : s.levels;
+  return [...new Set(lv)].sort((a,b)=>a-b);
+}
+/** レベル t（0〜1、拡張時はそれ以上）に対応するワールドY。y1=始点(レベル0)、y2=終点(レベル1) */
+const fibLevelY = (s, t) => s.y1 + t*(s.y2-s.y1);
+Shapes.fib = {
+  bbox(s){
+    const lv = fibLevels(s);
+    const ys = lv.length ? lv.map(t=>fibLevelY(s,t)) : [s.y1,s.y2];
+    const y0=Math.min(...ys), y1v=Math.max(...ys);
+    const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2);
+    const pad = Math.max(4, styleOf(s).width);
+    return { x:x0-pad, y:y0-pad, w:(x1-x0)+pad*2, h:(y1v-y0)+pad*2 };
+  },
+  draw(ctx, s){
+    const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2);
+    const lv = fibLevels(s);
+    const st = styleOf(s);
+    ctx.save();
+    // レベル間を薄く交互に塗り分け（読みやすさのための任意装飾）
+    for(let i=0;i<lv.length-1;i++){
+      const ya=fibLevelY(s,lv[i]), yb=fibLevelY(s,lv[i+1]);
+      ctx.fillStyle = i%2===0 ? 'rgba(76,141,255,.05)' : 'rgba(76,141,255,.015)';
+      ctx.fillRect(x0, Math.min(ya,yb), x1-x0, Math.abs(yb-ya));
+    }
+    for(const t of lv){
+      const y = fibLevelY(s,t);
+      const edge = (t===0 || t===1);
+      ctx.strokeStyle = st.stroke;
+      ctx.globalAlpha = edge ? st.opacity : st.opacity*0.7;
+      ctx.lineWidth = Math.max(edge ? st.width+0.75 : st.width, 1/cam().zoom);
+      ctx.setLineDash(st.dash ? [6/cam().zoom,4/cam().zoom] : []);
+      ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    }
+    ctx.restore();
+  },
+  hit(s, p, tol){
+    const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2);
+    const lv = fibLevels(s);
+    if(p.x >= x0-tol && p.x <= x1+tol){
+      for(const t of lv) if(Math.abs(p.y - fibLevelY(s,t)) <= tol) return true;
+    }
+    const ys = lv.length ? lv.map(t=>fibLevelY(s,t)) : [s.y1,s.y2];
+    const y0=Math.min(...ys), y1v=Math.max(...ys);
+    if(distToSegment(p.x,p.y, x0,y0,x0,y1v) <= tol) return true;
+    if(distToSegment(p.x,p.y, x1,y0,x1,y1v) <= tol) return true;
+    return false;
+  },
+  move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
+  dragHandle(s, id, p){
+    const x=snapV(p.x), y=snapV(p.y);
+    if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
+  },
+};
+
+/* 共通ヘルパ（レジストリ経由） */
+const def = s => Shapes[s.type];
+const bboxOf = s => def(s).bbox(s);
+function unionBBox(list){
+  if(!list.length) return null;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(const s of list){
+    if(s.type === 'hline'){
+      // hline.bbox() は「現在のカメラ位置でのビューポート全幅」を返す設計
+      // （選択枠やカリングが常に画面いっぱいに効くようにするため、意図的にカメラ依存）。
+      // これを unionBBox（コンテンツ全体の範囲＝fitToContent/ペースト位置決め用）に
+      // そのまま含めると、fitToContent() を呼ぶたびにカメラが動く→bboxが変わる→
+      // さらにカメラが動く…という無限フィードバックループになる。
+      // ここでは価格位置（Y）だけを寄与させ、カメラ依存のX方向には寄与させない。
+      const y = PY(s.y);
+      y0=Math.min(y0,y); y1=Math.max(y1,y);
+      continue;
+    }
+    const b=bboxOf(s);
+    x0=Math.min(x0,b.x); y0=Math.min(y0,b.y); x1=Math.max(x1,b.x+b.w); y1=Math.max(y1,b.y+b.h);
+  }
+  if(!isFinite(x0)){ x0=0; x1=0; }   // 全オブジェクトが hline だった場合の保険（X方向の範囲を持たない）
+  return {x:x0,y:y0,w:x1-x0,h:y1-y0};
+}
+const byId = id => board.objects.find(o=>o.id===id);
+const selected = () => board.objects.filter(o=>ui.selection.has(o.id));
+
+/* ==========================================================================
+   5. レンダリング
+   ========================================================================== */
+const cv = $('cv');
+const ctx = cv.getContext('2d');
+let W=0, H=0, dpr=1, renderQueued=false;
+
+function requestRender(){
+  if(renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(()=>{ renderQueued=false; render(); });
+}
+
+function resizeCanvas(){
+  const r = cv.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = Math.round(W*dpr);
+  cv.height = Math.round(H*dpr);
+  requestRender();
+}
+new ResizeObserver(resizeCanvas).observe($('stage'));
+
+/** 現テーマの CSS カラー変数。render() の先頭で 1 フレームにつき 1 回だけ読み直す
+ *  （getComputedStyle は毎回呼ぶとやや重いので、drawGrid() 等の毎フレーム呼び出しからは
+ *   このキャッシュを読むだけにする）。ライト/ダークどちらの色もここ経由で反映される。 */
+let themeColors = { bg:'#14171c', grid1:'rgba(255,255,255,.05)', grid2:'rgba(255,255,255,.10)', axis:'rgba(255,255,255,.18)' };
+function refreshThemeColors(){
+  const cs = getComputedStyle(document.body);
+  themeColors = {
+    bg:    cs.getPropertyValue('--bg').trim()    || themeColors.bg,
+    grid1: cs.getPropertyValue('--grid-1').trim() || themeColors.grid1,
+    grid2: cs.getPropertyValue('--grid-2').trim() || themeColors.grid2,
+    axis:  cs.getPropertyValue('--axis').trim()   || themeColors.axis,
+  };
+}
+
+function render(){
+  const c = cam(), z = c.zoom;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  refreshThemeColors();
+  ctx.fillStyle = themeColors.bg;
+  ctx.fillRect(0,0,W,H);
+
+  // --- ワールド座標系 ---
+  ctx.save();
+  ctx.translate(-c.x*z, -c.y*z);
+  ctx.scale(z,z);
+  drawGrid();
+  const vis = visibleObjects();
+  for(const s of vis) def(s).draw(ctx, s);
+  drawCreatePreview();
+  ctx.restore();
+
+  // --- スクリーン座標系のオーバーレイ ---
+  drawHover();
+  drawSelection();
+  drawMarquee();
+  drawHLineLabels();
+  drawFibLabels();
+  drawEmptyHint();
+
+  // text/note の編集中オーバーレイをパン・ズームに追従させる
+  if(ui.editing){
+    const s = byId(ui.editing.id);
+    if(s) positionEditDiv(ui.editing.div, s); else finalizeEditing();
+  }
+}
+
+/** 空のボードにキャンバス中央へうっすら操作案内を表示する（7.3） */
+function drawEmptyHint(){
+  if(board.objects.length || ui.drag) return;
+  ctx.save();
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.globalAlpha = .38;
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-dim').trim() || '#7b848f';
+  ctx.font = '600 13px -apple-system,sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('K を押してドラッグ — ローソク足を描けます', W/2, H/2 - 10);
+  ctx.font = '12px -apple-system,sans-serif';
+  ctx.fillText('？キーでショートカット一覧', W/2, H/2 + 14);
+  ctx.restore();
+}
+
+/** ビューポートカリング */
+function visibleObjects(){
+  const c = cam(), z = c.zoom;
+  const pad = 40/z;
+  const vx0=c.x-pad, vy0=c.y-pad, vx1=c.x+W/z+pad, vy1=c.y+H/z+pad;
+  return board.objects.filter(s=>{
+    const b = bboxOf(s);
+    return b.x <= vx1 && b.x+b.w >= vx0 && b.y <= vy1 && b.y+b.h >= vy0;
+  });
+}
+
+function drawGrid(){
+  const c = cam(), z = c.zoom;
+  let step = board.settings.grid;
+  while(step*z < 8) step *= 5;
+  const major = step*5;
+  const x0 = Math.floor(c.x/step)*step, x1 = c.x + W/z;
+  const y0 = Math.floor(c.y/step)*step, y1 = c.y + H/z;
+  const lw = 1/z;
+
+  ctx.lineWidth = lw;
+  // minor（テーマごとの色は render() が毎フレーム更新する themeColors を読む — ハードコード禁止）
+  ctx.strokeStyle = themeColors.grid1;
+  ctx.beginPath();
+  for(let x=x0;x<=x1;x+=step){ if(Math.abs(x%major)<1e-6) continue; ctx.moveTo(x,c.y); ctx.lineTo(x,y1); }
+  for(let y=y0;y<=y1;y+=step){ if(Math.abs(y%major)<1e-6) continue; ctx.moveTo(c.x,y); ctx.lineTo(x1,y); }
+  ctx.stroke();
+  // major
+  ctx.strokeStyle = themeColors.grid2;
+  ctx.beginPath();
+  for(let x=Math.floor(c.x/major)*major;x<=x1;x+=major){ ctx.moveTo(x,c.y); ctx.lineTo(x,y1); }
+  for(let y=Math.floor(c.y/major)*major;y<=y1;y+=major){ ctx.moveTo(c.x,y); ctx.lineTo(x1,y); }
+  ctx.stroke();
+  // 原点軸
+  ctx.strokeStyle = themeColors.axis;
+  ctx.beginPath();
+  if(0>=c.x && 0<=x1){ ctx.moveTo(0,c.y); ctx.lineTo(0,y1); }
+  if(0>=c.y && 0<=y1){ ctx.moveTo(c.x,0); ctx.lineTo(x1,0); }
+  ctx.stroke();
+}
+
+function drawCreatePreview(){
+  const d = ui.drag;
+  if(!d || d.mode!=='create' || !d.preview) return;
+  ctx.globalAlpha = .75;
+  def(d.preview).draw(ctx, d.preview);   // 型に依存しない汎用ディスパッチ
+  ctx.globalAlpha = 1;
+}
+
+function drawHover(){
+  if(!ui.hoverId || ui.selection.has(ui.hoverId) || ui.drag) return;
+  const s = byId(ui.hoverId); if(!s) return;
+  const b = bboxOf(s), p = w2s(b.x,b.y), z = cam().zoom;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.strokeStyle = 'rgba(76,141,255,.45)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(p.x-3, p.y-3, b.w*z+6, b.h*z+6);
+}
+
+const HANDLE_R = 4.5;   // 見た目の半径（スクリーン px）
+function drawSelection(){
+  const sel = selected();
+  if(!sel.length) return;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const z = cam().zoom;
+
+  // 各オブジェクトの点線枠
+  ctx.strokeStyle = 'rgba(76,141,255,.85)';
+  ctx.lineWidth = 1.25;
+  ctx.setLineDash([4,3]);
+  for(const s of sel){
+    const b = bboxOf(s), p = w2s(b.x,b.y);
+    ctx.strokeRect(p.x-3, p.y-3, b.w*z+6, b.h*z+6);
+  }
+  ctx.setLineDash([]);
+
+  // ハンドルは単一選択時のみ（スクリーン空間で固定サイズ）
+  if(sel.length !== 1) return;
+  const s = sel[0];
+  if(!def(s).handles) return;
+  // save/restore で囲む: textAlign/textBaseline/font をここで変更したままにすると、
+  // 次フレームの他オブジェクト描画（例: 付箋のテキスト）に漏れて位置がずれるバグになる。
+  ctx.save();
+  for(const hd of def(s).handles(s)){
+    const p = w2s(hd.x, hd.y);
+    const active = ui.hoverHandle===hd.id || (ui.drag?.mode==='handle' && ui.drag.handle===hd.id);
+    ctx.fillStyle = active ? '#4c8dff' : '#ffffff';
+    ctx.strokeStyle = '#4c8dff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.rect(p.x-HANDLE_R, p.y-HANDLE_R, HANDLE_R*2, HANDLE_R*2);
+    ctx.fill(); ctx.stroke();
+    // ラベル（candle の O/H/L/C のような意味のある短いIDのみ表示。nw/se 等の合成IDは省略）
+    if(hd.id.length <= 1){
+      ctx.fillStyle = 'rgba(255,255,255,.55)';
+      ctx.font = '600 9px -apple-system,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const off = (hd.id==='H') ? -13 : (hd.id==='L') ? 13 : 0;
+      const offX = (hd.id==='O') ? -12 : (hd.id==='C') ? 12 : 0;
+      ctx.fillText(hd.id, p.x+offX, p.y+off);
+    }
+  }
+  ctx.restore();
+}
+
+function drawMarquee(){
+  const d = ui.drag;
+  if(!d || d.mode!=='marquee') return;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const a = w2s(d.a.x,d.a.y), b = w2s(d.b.x,d.b.y);
+  const x=Math.min(a.x,b.x), y=Math.min(a.y,b.y), w=Math.abs(b.x-a.x), h=Math.abs(b.y-a.y);
+  ctx.fillStyle = 'rgba(76,141,255,.12)';
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle = 'rgba(76,141,255,.8)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x+.5,y+.5,w,h);
+}
+
+function fmtPrice(v){
+  return Number.isInteger(v) ? String(v) : String(Math.round(v*100)/100);
+}
+/** hline の価格ラベルはズームしても文字サイズが変わらないよう、スクリーン空間で描く */
+function drawHLineLabels(){
+  const lines = board.objects.filter(o=>o.type==='hline');
+  if(!lines.length) return;
+  ctx.save();
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.font = '600 11px -apple-system,sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  for(const s of lines){
+    const py = w2s(0, PY(s.y)).y;
+    if(py < -20 || py > H+20) continue;   // 画面外はスキップ
+    const label = fmtPrice(s.y);
+    const boxW = ctx.measureText(label).width + 16, boxH = 18;
+    const x = W - boxW - 6, y = py - boxH/2;
+    ctx.fillStyle = styleOf(s).stroke;
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.fillStyle = '#0d0f13';
+    ctx.fillText(label, x + boxW/2, py + 0.5);
+  }
+  ctx.restore();
+}
+/** fib のレベルラベルはボックスの右端にスクリーン空間で描く（ズームで巨大化/消滅しないように） */
+function drawFibLabels(){
+  const fibs = board.objects.filter(o=>o.type==='fib');
+  if(!fibs.length) return;
+  ctx.save();
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.font = '600 10px -apple-system,sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  const MIN_GAP = 14;   // ラベル同士の最小スクリーン間隔(px)。狭いレンジで重ならないようにする
+  for(const s of fibs){
+    const rightX = Math.max(s.x1, s.x2);
+    const st = styleOf(s);
+    // 先に全レベルのスクリーンY座標を求め、近すぎるものは上から順に押し下げて重なりを避ける
+    const items = fibLevels(s).map(t=>{
+      const worldY = fibLevelY(s, t);
+      const p = w2s(rightX, worldY);
+      return { t, worldY, x:p.x, y:p.y };
+    }).filter(it => it.y > -20 && it.y < H+20).sort((a,b)=>a.y-b.y);
+    for(let i=1;i<items.length;i++){
+      if(items[i].y - items[i-1].y < MIN_GAP) items[i].y = items[i-1].y + MIN_GAP;
+    }
+    ctx.fillStyle = st.stroke;
+    for(const it of items){
+      const label = s.showPrice ? `${it.t} (${fmtPrice(YP(it.worldY))})` : String(it.t);
+      ctx.fillText(label, it.x + 6, it.y);
+    }
+  }
+  ctx.restore();
+}
+
+/* ==========================================================================
+   6. ヒットテスト
+   ========================================================================== */
+/** 選択中の単一オブジェクトのハンドルを screen 距離で判定 */
+function hitHandle(sp){
+  const sel = selected();
+  if(sel.length !== 1) return null;
+  const s = sel[0];
+  if(!def(s).handles) return null;
+  for(const hd of def(s).handles(s)){
+    const p = w2s(hd.x, hd.y);
+    if(Math.abs(sp.x-p.x) <= 6 && Math.abs(sp.y-p.y) <= 6) return { shape:s, handle:hd.id };
+  }
+  return null;
+}
+/** 前面から走査して最初にヒットしたオブジェクトを返す */
+function hitObject(wpt){
+  const tol = tolW(6);
+  for(let i=board.objects.length-1;i>=0;i--){
+    const s = board.objects[i];
+    if(s.locked) continue;
+    if(def(s).hit(s, wpt, tol)) return s;
+  }
+  return null;
+}
+
+/* ==========================================================================
+   6x. テキスト編集オーバーレイ（text / note 共通）
+   --------------------------------------------------------------------------
+   contenteditable な div をキャンバス上に絶対配置で重ねて編集する。
+   編集中は Shapes.text/note.draw() 側が描画をスキップする（ui.editing で判定）。
+   ========================================================================== */
+function positionEditDiv(div, s){
+  const p = w2s(s.x, s.y), z = cam().zoom;
+  if(s.type === 'text'){
+    div.style.left = p.x + 'px';
+    div.style.top = p.y + 'px';
+    div.style.font = `${(s.fontSize||16)*z}px -apple-system,sans-serif`;
+    div.style.color = styleOf(s).stroke;
+    div.style.minWidth = '20px';
+    div.style.textAlign = s.align || 'left';
+  } else { // note
+    div.style.left = p.x + 'px';
+    div.style.top = p.y + 'px';
+    div.style.width = (s.w*z) + 'px';
+    div.style.height = (s.h*z) + 'px';
+    div.style.padding = '8px';
+    div.style.boxSizing = 'border-box';
+    div.style.font = `${13*z}px -apple-system,sans-serif`;
+    div.style.color = noteTextColor(s.bg);
+  }
+}
+function startEditing(s){
+  if(ui.editing) finalizeEditing();
+  const div = document.createElement('div');
+  div.contentEditable = 'true';
+  div.spellcheck = false;
+  div.className = 'shape-edit ' + (s.type==='note' ? 'note-edit' : 'text-edit');
+  div.innerText = s.text || '';
+  $('stage').appendChild(div);
+  positionEditDiv(div, s);
+  ui.editing = { id: s.id, div };
+  div.addEventListener('keydown', ev=>{
+    // stopPropagation で window 側の isTyping() 分岐にすら渡さない。
+    // そのため Escape の確定処理もここで自前で行う必要がある（window 側には委譲できない）。
+    ev.stopPropagation();
+    if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); div.blur(); }
+    else if(ev.key==='Escape'){ ev.preventDefault(); div.blur(); }
+  });
+  div.addEventListener('blur', finalizeEditing);
+  requestAnimationFrame(()=>{
+    div.focus();
+    const range = document.createRange();
+    range.selectNodeContents(div);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+  });
+  requestRender();
+}
+function finalizeEditing(){
+  const ed = ui.editing;
+  if(!ed) return;
+  ui.editing = null;
+  const s = byId(ed.id);
+  const text = ed.div.innerText.replace(/\n+$/,'');
+  ed.div.remove();
+  if(!s){ requestRender(); return; }
+  if(!text.trim()){
+    act(()=>{ board.objects = board.objects.filter(o=>o.id!==s.id); ui.selection.delete(s.id); });
+  } else {
+    act(()=>{ s.text = text; });
+  }
+}
+
+/* ==========================================================================
+   7. ツール定義 / ツールバー
+   ========================================================================== */
+const ICON = {
+  select:'<path d="M4 2l10 7-4.2 1.1L11 15l-2 .8-1.7-4.6L4 14z"/>',
+  hand:  '<path d="M6 9V4.2a1.2 1.2 0 012.4 0V8m0-.4V3.2a1.2 1.2 0 012.4 0V8m0-.6a1.2 1.2 0 012.4 0V11c0 2.8-1.9 4.6-4.4 4.6C6.2 15.6 4 13.9 4 11.4V9.6a1.2 1.2 0 012.4 0"/>',
+  candle:'<path d="M9 2v3M9 13v3"/><rect x="6" y="5" width="6" height="8" rx="1"/>',
+  pen:   '<path d="M3 15l1-3.4L11.6 4a1.6 1.6 0 012.3 2.3L6.4 14z"/>',
+  line:  '<path d="M3 14L15 4"/>',
+  arrow: '<path d="M3 14L15 4M15 4h-4.6M15 4v4.6"/>',
+  hline: '<path d="M2 9h14M5 6.5v5M13 6.5v5"/>',
+  rect:  '<rect x="3" y="4.5" width="12" height="9" rx="1"/>',
+  text:  '<path d="M4 4h10M9 4v11M6.5 15h5"/>',
+  note:  '<path d="M3.5 3.5h11v7.5l-3.5 3.5h-7.5z"/><path d="M14.5 11h-3.5v3.5"/>',
+  fib:   '<path d="M2 4h14M2 7.6h14M2 11.2h14M2 14.8h14"/>',
+};
+const TOOLS = [
+  { id:'select', key:'V', label:'選択' },
+  { id:'hand',   key:'H', label:'ハンド（パン）' },
+  { div:true },
+  { id:'candle', key:'K', label:'ローソク足' },
+  { div:true },
+  { id:'pen',    key:'P', label:'ペン' },
+  { id:'line',   key:'L', label:'直線' },
+  { id:'arrow',  key:'A', label:'矢印' },
+  { id:'hline',  key:'⇧L',label:'水平ライン' },
+  { id:'rect',   key:'R', label:'矩形ゾーン' },
+  { id:'text',   key:'T', label:'テキスト' },
+  { id:'note',   key:'N', label:'付箋' },
+  { id:'fib',    key:'F', label:'フィボナッチ' },
+];
+
+function buildToolbar(){
+  const nav = $('toolbar');
+  nav.innerHTML = '';
+  for(const t of TOOLS){
+    if(t.div){ const d=document.createElement('div'); d.className='tool-div'; nav.appendChild(d); continue; }
+    const b = document.createElement('button');
+    b.className = 'tool';
+    b.dataset.tool = t.id;
+    b.innerHTML = `<svg viewBox="0 0 18 18">${ICON[t.id]}</svg>
+      <span class="tip">${t.label} <b style="opacity:.6">${t.key}</b></span>`;
+    b.onclick = ()=>setTool(t.id);
+    nav.appendChild(b);
+  }
+}
+function setTool(id){
+  ui.tool = id;
+  if(id !== 'select') ui.selection.clear();
+  syncUI(); requestRender(); updateCursor();
+}
+const CREATE_TOOLS = new Set(['candle','pen','line','arrow','hline','rect','text','note','fib']);
+/** ハンドルの形状ごとに適切なリサイズカーソルを返す（7.3）。
+ *  candle の O/H/L/C・hline の p は価格（Y）方向にしか動かないので ns-resize。
+ *  rect の四隅は対角方向なので nwse-resize / nesw-resize を使い分ける。
+ *  line/arrow/fib の端点は自由な方向に動くので move。 */
+function handleCursor(s, id){
+  if(!s) return 'ns-resize';
+  switch(s.type){
+    case 'candle':
+    case 'hline':
+      return 'ns-resize';
+    case 'rect':
+      return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
+    case 'line': case 'arrow': case 'fib':
+      return 'move';
+    default:
+      return 'ns-resize';
+  }
+}
+function updateCursor(){
+  let c = 'default';
+  if(ui.drag?.mode==='pan') c='grabbing';
+  else if(ui.tool==='hand' || ui.spaceHeld) c='grab';
+  else if(CREATE_TOOLS.has(ui.tool)) c='crosshair';
+  else if(ui.hoverHandle) c=handleCursor(byId(ui.hoverId), ui.hoverHandle);
+  else if(ui.hoverId) c='move';
+  cv.style.cursor = c;
+}
+
+/* ==========================================================================
+   8. ポインタ入力（状態機械）
+   ========================================================================== */
+function localPt(e){ const r=cv.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
+
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture(e.pointerId);
+  const sp = localPt(e), wp = s2w(sp.x,sp.y);
+  ui.mouseWorld = wp;
+
+  // text/note 編集中に他所をクリックしたら、blur イベントのタイミングに依存せず確実に確定させる
+  if(ui.editing) finalizeEditing();
+
+  // --- パン ---
+  if(e.button===1 || ui.spaceHeld || ui.tool==='hand'){
+    ui.drag = { mode:'pan', sp, cam:{...cam()} };
+    updateCursor(); return;
+  }
+  if(e.button!==0) return;
+
+  // --- ローソク作成 ---
+  // ui.drag.commit() が確定処理を提供する汎用パターン（Phase 4 の他ツールもこれに倣う）。
+  if(ui.tool==='candle'){
+    const x = snapV(wp.x), p = snapV(YP(wp.y));
+    ui.drag = {
+      mode:'create', tool:'candle', x, p0:p, p1:p, preview:null, sp,
+      onMove(wp){
+        this.p1 = snapV(YP(wp.y));
+        const bullish = this.p1 >= this.p0;   // 上へドラッグ = 陽線 / 下へ = 陰線
+        this.preview = makeCandle(this.x, Math.max(this.p0,this.p1), Math.min(this.p0,this.p1), bullish);
+      },
+      commit(){
+        // ドラッグ距離ゼロ（クリックのみ）ならデフォルトサイズで生成
+        return this.preview || makeCandle(this.x, this.p0+board.settings.grid*2, this.p0-board.settings.grid*2, true);
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
+  }
+
+  // --- 直線 / 矢印 ---
+  if(ui.tool==='line' || ui.tool==='arrow'){
+    const x = snapV(wp.x), y = snapV(wp.y);
+    const type = ui.tool;
+    ui.drag = {
+      mode:'create', tool:type, x1:x, y1:y, x2:x, y2:y, preview:null,
+      onMove(wp, ev){
+        let x2 = snapV(wp.x), y2 = snapV(wp.y);
+        if(ev && ev.shiftKey){ const sn = snapAngle45(this.x1,this.y1,x2,y2); x2=sn.x2; y2=sn.y2; }
+        this.x2 = x2; this.y2 = y2;
+        this.preview = type==='line' ? makeLine(this.x1,this.y1,x2,y2) : makeArrow(this.x1,this.y1,x2,y2);
+      },
+      commit(){
+        // 実質クリックのみ（移動量ゼロ）なら何も作らない
+        if(Math.hypot(this.x2-this.x1, this.y2-this.y1) < 1) return null;
+        return this.preview;
+      },
+    };
+    ui.drag.onMove(wp, e);
+    requestRender(); return;
+  }
+
+  // --- 矩形ゾーン ---
+  if(ui.tool==='rect'){
+    const x0 = snapV(wp.x), y0 = snapV(wp.y);
+    ui.drag = {
+      mode:'create', tool:'rect', x0, y0, preview:null,
+      onMove(wp){
+        const x2=snapV(wp.x), y2=snapV(wp.y);
+        const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
+        const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
+        this.preview = (w>=1 && h>=1) ? makeRect(x,y,w,h) : null;
+      },
+      commit(){
+        if(this.preview) return this.preview;
+        const g = board.settings.grid;   // クリックのみ: デフォルトサイズ
+        return makeRect(this.x0, this.y0, g*6, g*3);
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
+  }
+
+  // --- ペン（フリーハンド） ---
+  if(ui.tool==='pen'){
+    ui.drag = {
+      mode:'create', tool:'pen', ox:wp.x, oy:wp.y, pts:[0,0], last:{x:wp.x,y:wp.y}, preview:null,
+      onMove(wp){
+        const dx = wp.x-this.last.x, dy = wp.y-this.last.y;
+        if(Math.hypot(dx,dy) >= 2/cam().zoom){
+          this.pts.push(wp.x-this.ox, wp.y-this.oy);
+          this.last = { x:wp.x, y:wp.y };
+        }
+        this.preview = makePen(this.ox, this.oy, this.pts);
+      },
+      commit(){
+        if(this.pts.length < 4) return null;   // 実質1点だけなら作らない
+        return this.preview;
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
+  }
+
+  // --- 水平ライン: クリックのみで即確定（ドラッグ不要） ---
+  if(ui.tool==='hline'){
+    const price = snapV(YP(wp.y));
+    const s = makeHLine(price);
+    act(()=>{ board.objects.push(s); });
+    ui.selection = new Set([s.id]);
+    setTool('select');
+    return;
+  }
+
+  // --- テキスト: クリックで挿入し即座に編集モードへ ---
+  if(ui.tool==='text'){
+    const s = makeText(snapV(wp.x), snapV(wp.y));
+    act(()=>{ board.objects.push(s); });
+    ui.selection = new Set([s.id]);
+    setTool('select');
+    startEditing(s);
+    return;
+  }
+
+  // --- 付箋: ドラッグでサイズ指定、クリックのみならデフォルトサイズ ---
+  if(ui.tool==='note'){
+    const x0 = snapV(wp.x), y0 = snapV(wp.y);
+    ui.drag = {
+      mode:'create', tool:'note', x0, y0, preview:null,
+      onMove(wp){
+        const x2=snapV(wp.x), y2=snapV(wp.y);
+        const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
+        const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
+        this.preview = (w>=40 && h>=30) ? makeNote(x,y,w,h) : null;
+      },
+      commit(){
+        return this.preview || makeNote(this.x0, this.y0, 160, 120);
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
+  }
+
+  // --- フィボナッチ・リトレースメント: 2点ドラッグ。y1=始点(レベル0) / y2=終点(レベル1) ---
+  if(ui.tool==='fib'){
+    const x = snapV(wp.x), y = snapV(wp.y);
+    ui.drag = {
+      mode:'create', tool:'fib', x1:x, y1:y, x2:x, y2:y, preview:null,
+      onMove(wp){
+        this.x2 = snapV(wp.x); this.y2 = snapV(wp.y);
+        this.preview = makeFib(this.x1, this.y1, this.x2, this.y2);
+      },
+      commit(){
+        if(Math.hypot(this.x2-this.x1, this.y2-this.y1) < 1) return null;   // 実質クリックのみなら作らない
+        return this.preview;
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
+  }
+
+  // --- 選択ツール ---
+  if(ui.tool==='select'){
+    const hh = hitHandle(sp);
+    if(hh){                                       // ハンドルドラッグ
+      beginAction();
+      ui.drag = { mode:'handle', id:hh.shape.id, handle:hh.handle };
+      requestRender(); return;
+    }
+    const hit = hitObject(wp);
+    if(hit){
+      if(e.shiftKey){
+        ui.selection.has(hit.id) ? ui.selection.delete(hit.id) : ui.selection.add(hit.id);
+        syncUI(); requestRender(); return;
+      }
+      if(!ui.selection.has(hit.id)){ ui.selection.clear(); ui.selection.add(hit.id); }
+      beginAction();
+      // Alt ドラッグ = 複製しながら移動
+      if(e.altKey){
+        const copies = selected().map(s=>{ const n=clone(s); n.id=uid(); return n; });
+        board.objects.push(...copies);
+        ui.selection = new Set(copies.map(s=>s.id));
+      }
+      ui.drag = {
+        mode:'move', startW:wp,
+        orig: new Map(selected().map(s=>[s.id, clone(s)])),
+      };
+      syncUI(); requestRender(); return;
+    }
+    // 何もない所 → 矩形選択
+    if(!e.shiftKey) ui.selection.clear();
+    ui.drag = { mode:'marquee', a:wp, b:wp, base:new Set(ui.selection) };
+    syncUI(); requestRender(); return;
+  }
+});
+
+cv.addEventListener('pointermove', e=>{
+  const sp = localPt(e), wp = s2w(sp.x,sp.y);
+  ui.mouseWorld = wp;
+  const d = ui.drag;
+
+  if(!d){
+    // ホバー判定
+    const hh = hitHandle(sp);
+    const newHandle = hh ? hh.handle : null;
+    const hitId = hh ? hh.shape.id : (ui.tool==='select' ? (hitObject(wp)?.id || null) : null);
+    if(newHandle!==ui.hoverHandle || hitId!==ui.hoverId){
+      ui.hoverHandle = newHandle; ui.hoverId = hitId;
+      updateCursor(); requestRender();
+    }
+    return;
+  }
+
+  if(d.mode==='pan'){
+    const z = cam().zoom;
+    cam().x = d.cam.x - (sp.x-d.sp.x)/z;
+    cam().y = d.cam.y - (sp.y-d.sp.y)/z;
+    requestRender(); return;
+  }
+  if(d.mode==='create'){
+    if(d.onMove) d.onMove(wp, e);
+    requestRender(); return;
+  }
+  if(d.mode==='handle'){
+    const s = byId(d.id); if(!s) return;
+    def(s).dragHandle(s, d.handle, wp);
+    requestRender(); syncInspectorValues(); return;
+  }
+  if(d.mode==='move'){
+    let dx = wp.x - d.startW.x, dy = wp.y - d.startW.y;
+    const g = board.settings.grid;
+    if(snapOn()){ dx = Math.round(dx/g)*g; dy = Math.round(dy/g)*g; }
+    for(const [id, orig] of d.orig){
+      const s = byId(id); if(!s) continue;
+      Object.assign(s, clone(orig));
+      def(s).move(s, dx, dy);
+    }
+    requestRender(); syncInspectorValues(); return;
+  }
+  if(d.mode==='marquee'){
+    d.b = wp;
+    const x0=Math.min(d.a.x,d.b.x), x1=Math.max(d.a.x,d.b.x);
+    const y0=Math.min(d.a.y,d.b.y), y1=Math.max(d.a.y,d.b.y);
+    ui.selection = new Set(d.base);
+    for(const s of board.objects){
+      const b = bboxOf(s);
+      if(b.x<=x1 && b.x+b.w>=x0 && b.y<=y1 && b.y+b.h>=y0) ui.selection.add(s.id);
+    }
+    requestRender(); syncUI(); return;
+  }
+});
+
+function endDrag(){
+  const d = ui.drag;
+  if(!d){ return; }
+  ui.drag = null;
+
+  if(d.mode==='create'){
+    // ui.drag.commit() は型を知らない。各ツールの pointerdown 側が確定処理を提供する。
+    const s = d.commit ? d.commit() : d.preview;
+    if(s){
+      act(()=>{ board.objects.push(s); });
+      ui.selection = new Set([s.id]);
+      if(s.type==='note') startEditing(s);   // 付箋はドラッグ確定直後にそのまま編集へ
+    }
+    setTool('select');
+  } else if(d.mode==='handle' || d.mode==='move'){
+    if(d.mode==='handle'){ const s=byId(d.id); if(s && s.type==='candle') normalizeCandle(s); }
+    commitAction();
+  } else {
+    cancelAction();
+  }
+  updateCursor(); requestRender(); syncUI();
+}
+cv.addEventListener('pointerup', endDrag);
+cv.addEventListener('pointercancel', endDrag);
+
+/* text / note の再編集用。既存の pointerdown/move/up 状態機械とは独立に動作し、
+   干渉しない（ダブルクリックは通常の 2 回の down/up が先に処理された後に発火する）。
+   §0.8 の「新規グローバルリスナ禁止」の例外: ダブルクリック再編集は仕様上必須で、
+   ドラッグ状態機械とは競合しないため追加している。 */
+cv.addEventListener('dblclick', e=>{
+  if(ui.tool!=='select') return;
+  const sp = localPt(e), wp = s2w(sp.x,sp.y);
+  const hit = hitObject(wp);
+  if(hit && (hit.type==='text' || hit.type==='note')){
+    ui.selection = new Set([hit.id]);
+    syncUI(); requestRender();
+    startEditing(hit);
+  }
+});
+
+/* ---- ホイール: パン / ズーム ---- */
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const c = cam();
+  if(e.ctrlKey || e.metaKey){
+    const sp = localPt(e), before = s2w(sp.x,sp.y);
+    const nz = clamp(c.zoom * Math.exp(-e.deltaY*0.002), 0.1, 8);
+    c.zoom = nz;
+    c.x = before.x - sp.x/nz;
+    c.y = before.y - sp.y/nz;
+  } else {
+    let dx = e.deltaX, dy = e.deltaY;
+    if(e.shiftKey && dx===0){ dx = dy; dy = 0; }
+    c.x += dx / c.zoom;
+    c.y += dy / c.zoom;
+  }
+  requestRender(); syncTopbar();
+}, { passive:false });
+
+/* ==========================================================================
+   9. キーボード
+   ========================================================================== */
+const isTyping = e => /^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable;
+
+window.addEventListener('keydown', e=>{
+  if(e.key==='Alt' && !ui.altHeld){ ui.altHeld=true; }
+  if(isTyping(e)){
+    if(e.key==='Escape') e.target.blur();
+    return;
+  }
+  {
+    const drawerOpen = $('boardDrawer').classList.contains('open');
+    const modalOpen = !$('confirmModal').hidden;
+    const msgOpen = !$('msgModal').hidden;
+    if(drawerOpen || modalOpen || msgOpen){
+      if(e.key==='Escape'){
+        if(msgOpen){ if(msgModalFinish) msgModalFinish(null); }
+        else if(modalOpen){ $('confirmCancel').click(); }
+        else { closeBoardDrawer(); }
+      }
+      return;   // ドロワー/モーダル表示中はキャンバス側のショートカットを無効化
+    }
+  }
+  const mod = e.ctrlKey || e.metaKey;
+  const k = e.key;
+
+  if(k===' ' && !ui.spaceHeld){ ui.spaceHeld=true; updateCursor(); e.preventDefault(); return; }
+
+  // --- ツール切替 ---
+  // Shift+L (水平ライン) は l (直線) と衝突するため、必ず先に判定する。
+  if(!mod){
+    if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
+    if(!e.shiftKey){
+      const map = { v:'select', h:'hand', k:'candle', p:'pen', l:'line', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
+      const t = map[k.toLowerCase()];
+      if(t){ setTool(t); return; }
+    }
+  }
+
+  // --- ビュー ---
+  if(k==='!' || (e.shiftKey && k==='1')){ fitToContent(); return; }
+  if(k===')' || (e.shiftKey && k==='0')){ cam().zoom=1; requestRender(); syncTopbar(); return; }
+  if(k==='?' || (e.shiftKey && k==='/')){ $('help').hidden = !$('help').hidden; return; }
+
+  // --- 編集 ---
+  if(mod && k.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if(mod && k.toLowerCase()==='y'){ e.preventDefault(); redo(); return; }
+  if(mod && k.toLowerCase()==='a'){ e.preventDefault(); ui.selection=new Set(board.objects.map(o=>o.id)); syncUI(); requestRender(); return; }
+  if(mod && k.toLowerCase()==='c'){ ui.clipboard = selected().map(clone); return; }
+  if(mod && k.toLowerCase()==='v'){ pasteClipboard(); return; }
+  if(mod && k.toLowerCase()==='d'){ e.preventDefault(); duplicateInPlace(); return; }
+  if(mod && k===']'){ e.preventDefault(); reorder('front'); return; }
+  if(mod && k==='['){ e.preventDefault(); reorder('back'); return; }
+  if(mod && e.shiftKey && k.toLowerCase()==='a'){ e.preventDefault(); distributeX(); return; }
+
+  if(k==='Delete' || k==='Backspace'){
+    if(!ui.selection.size) return;
+    e.preventDefault();
+    act(()=>{ board.objects = board.objects.filter(o=>!ui.selection.has(o.id)); ui.selection.clear(); });
+    return;
+  }
+  if(k==='Enter'){ e.preventDefault(); duplicateBeside(e.shiftKey ? -1 : 1); return; }
+  if(k==='Escape'){
+    if(!$('help').hidden){ $('help').hidden=true; return; }
+    ui.selection.clear(); setTool('select'); return;
+  }
+  if(k.startsWith('Arrow')){
+    if(!ui.selection.size) return;
+    e.preventDefault();
+    const g = board.settings.grid * (e.shiftKey?10:1);
+    const dx = k==='ArrowLeft'?-g : k==='ArrowRight'?g : 0;
+    const dy = k==='ArrowUp'?-g : k==='ArrowDown'?g : 0;
+    act(()=>{ for(const s of selected()) def(s).move(s,dx,dy); });
+    return;
+  }
+});
+window.addEventListener('keyup', e=>{
+  if(e.key===' '){ ui.spaceHeld=false; updateCursor(); }
+  if(e.key==='Alt'){ ui.altHeld=false; }
+});
+window.addEventListener('blur', ()=>{ ui.spaceHeld=false; ui.altHeld=false; updateCursor(); });
+
+/* ==========================================================================
+   10. 編集コマンド
+   ========================================================================== */
+function pasteClipboard(){
+  if(!ui.clipboard.length) return;
+  const b = unionBBox(ui.clipboard);
+  const g = board.settings.grid;
+  let dx = snapV(ui.mouseWorld.x - (b.x + b.w/2));
+  let dy = snapV(ui.mouseWorld.y - (b.y + b.h/2));
+  const copies = ui.clipboard.map(s=>{ const n=clone(s); n.id=uid(); def(n).move(n,dx,dy); return n; });
+  act(()=>{ board.objects.push(...copies); ui.selection = new Set(copies.map(s=>s.id)); });
+}
+function duplicateInPlace(){
+  const sel = selected(); if(!sel.length) return;
+  const g = board.settings.grid;
+  const copies = sel.map(s=>{ const n=clone(s); n.id=uid(); def(n).move(n,g,g); return n; });
+  act(()=>{ board.objects.push(...copies); ui.selection = new Set(copies.map(s=>s.id)); });
+}
+/** Enter: 選択中のローソクを左右に複製（連続した足を並べるため） */
+function duplicateBeside(dir){
+  const sel = selected().filter(s=>s.type==='candle');
+  if(!sel.length) return;
+  const g = board.settings.grid;
+  const step = Math.max(g, Math.round(board.settings.candleWidth*1.6/g)*g);
+  const copies = sel.map(s=>{ const n=clone(s); n.id=uid(); n.x += step*dir; return n; });
+  act(()=>{ board.objects.push(...copies); ui.selection = new Set(copies.map(s=>s.id)); });
+}
+function reorder(where){
+  const sel = selected(); if(!sel.length) return;
+  act(()=>{
+    const rest = board.objects.filter(o=>!ui.selection.has(o.id));
+    board.objects = where==='front' ? [...rest, ...sel] : [...sel, ...rest];
+  });
+}
+/** X 方向に等間隔整列 */
+function distributeX(){
+  const sel = selected().filter(s=>s.type==='candle').sort((a,b)=>a.x-b.x);
+  if(sel.length < 2) return;
+  const g = board.settings.grid;
+  const step = Math.max(g, Math.round(board.settings.candleWidth*1.6/g)*g);
+  const x0 = snapV(sel[0].x);
+  act(()=>{ sel.forEach((s,i)=>{ s.x = x0 + step*i; }); });
+}
+function fitToContent(){
+  const c = cam();
+  if(!board.objects.length){ c.zoom=1; c.x=-W/2; c.y=-H/2; requestRender(); syncTopbar(); return; }
+  const b = unionBBox(board.objects);
+  const pad = 80;
+  const z = clamp(Math.min((W-pad*2)/Math.max(b.w,1), (H-pad*2)/Math.max(b.h,1)), 0.1, 2);
+  c.zoom = z;
+  c.x = b.x + b.w/2 - W/(2*z);
+  c.y = b.y + b.h/2 - H/(2*z);
+  requestRender(); syncTopbar();
+}
+
+/* ==========================================================================
+   11. インスペクタ / トップバー
+   ========================================================================== */
+/** board.settings.theme を <body class="light"> に反映する。板の切替/読込/テーマ変更、
+ *  どの経路でも必ず syncUI() を通るので、ここに置いておけば個別に呼び忘れる心配がない。 */
+function applyTheme(){
+  const light = board.settings.theme === 'light';
+  const changed = document.body.classList.contains('light') !== light;
+  document.body.classList.toggle('light', light);
+  if(changed) requestRender();   // グリッド/中空ローソクの色は themeColors 経由で次フレームに反映される
+}
+function syncUI(){ applyTheme(); syncTopbar(); syncToolbar(); buildInspector(); }
+
+function syncTopbar(){
+  $('lblZoom').textContent = Math.round(cam().zoom*100) + '%';
+  $('lblGrid').textContent = board.settings.grid;
+  $('btnSnap').classList.toggle('on', board.settings.snap);
+  $('lblCount').textContent = board.objects.length + ' オブジェクト'
+    + (ui.selection.size ? ` / ${ui.selection.size} 選択中` : '');
+}
+function syncToolbar(){
+  for(const b of document.querySelectorAll('.tool'))
+    b.classList.toggle('on', b.dataset.tool === ui.tool);
+}
+
+function num(label, value, onChange, step){
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent = label;
+  const i = document.createElement('input'); i.type='number'; i.value=value; i.step=step||1;
+  i.onchange = ()=>onChange(parseFloat(i.value));
+  row.append(l,i); return row;
+}
+function color(label, value, onChange){
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent=label;
+  const i = document.createElement('input'); i.type='color'; i.value=value;
+  i.oninput = ()=>onChange(i.value);
+  row.append(l,i); return row;
+}
+
+const INSPECTORS = {
+  candle: buildCandleInspector,
+  line: buildLineInspector,
+  arrow: buildArrowInspector,
+  rect: buildRectInspector,
+  hline: buildHLineInspector,
+  pen: buildPenInspector,
+  text: buildTextInspector,
+  note: buildNoteInspector,
+  fib: buildFibInspector,
+};
+function buildInspector(){
+  const ins = $('inspector');
+  ins.innerHTML = '';
+  const sel = selected();
+
+  if(sel.length === 1 && INSPECTORS[sel[0].type]){
+    INSPECTORS[sel[0].type](ins, sel[0]);
+  } else if(sel.length > 1){
+    const h = document.createElement('div'); h.className='ins-h'; h.textContent=`${sel.length} 個を選択中`;
+    ins.appendChild(h);
+    buildMultiStyleSection(ins, sel);
+    const b = document.createElement('button'); b.className='btn-full';
+    b.textContent='X 方向に等間隔整列'; b.onclick=distributeX;
+    ins.appendChild(b);
+    const b2 = document.createElement('button'); b2.className='btn-full';
+    b2.textContent='削除'; b2.onclick=()=>act(()=>{
+      board.objects = board.objects.filter(o=>!ui.selection.has(o.id)); ui.selection.clear();
+    });
+    ins.appendChild(b2);
+  } else {
+    buildBoardInspector(ins);
+  }
+}
+
+function buildCandleInspector(ins, k){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='ローソク足';
+  sec.appendChild(h);
+
+  const bd = document.createElement('div'); bd.style.marginBottom='10px';
+  bd.innerHTML = `<span class="badge ${isBull(k)?'bull':'bear'}">${isBull(k)?'陽線':'陰線'}</span>
+    <span style="color:var(--text-dim);font-size:11px;margin-left:8px">実体 ${Math.abs(k.c-k.o)} / 全幅 ${k.h-k.l}</span>`;
+  sec.appendChild(bd);
+
+  const grid = document.createElement('div'); grid.className='ohlc-grid';
+  for(const key of ['o','h','l','c']){
+    const cell = document.createElement('div'); cell.className='ohlc-cell';
+    const sp = document.createElement('span'); sp.textContent = key.toUpperCase();
+    const i = document.createElement('input'); i.type='number'; i.value=k[key];
+    i.dataset.ohlc = key;
+    i.onchange = ()=>act(()=>{ k[key] = parseFloat(i.value)||0; normalizeCandle(k); });
+    cell.append(sp,i); grid.appendChild(cell);
+  }
+  sec.appendChild(grid);
+  sec.appendChild(num('X 位置', k.x, v=>act(()=>{ k.x = v; })));
+  sec.appendChild(num('実体幅', cw(k), v=>act(()=>{ k.w = clamp(v,2,400); })));
+  ins.appendChild(sec);
+
+  const sec2 = document.createElement('div'); sec2.className='ins-sec';
+  const h2 = document.createElement('div'); h2.className='ins-h'; h2.textContent='操作';
+  sec2.appendChild(h2);
+  const hint = document.createElement('div'); hint.className='hintline';
+  hint.innerHTML = '左辺 = <b>O</b>／上 = <b>H</b>／下 = <b>L</b>／右辺 = <b>C</b><br>'
+    + 'Enter で右隣に複製<br>Alt でスナップ一時解除';
+  sec2.appendChild(hint);
+  ins.appendChild(sec2);
+}
+
+/* ---- 共通スタイルセクション（line/arrow/rect/hline/pen が共有） ---- */
+function buildStyleSection(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='スタイル';
+  sec.appendChild(h);
+  const st = s.style = s.style || {...DEFAULT_STYLE};
+  sec.appendChild(color('線色', st.stroke, v=>act(()=>{ st.stroke=v; })));
+  sec.appendChild(num('線幅', st.width, v=>act(()=>{ st.width=clamp(v,1,20); }), 0.5));
+
+  const opRow = document.createElement('div'); opRow.className='row';
+  const opL = document.createElement('label'); opL.textContent='不透明度';
+  const opI = document.createElement('input'); opI.type='number'; opI.min=0; opI.max=1; opI.step=0.05; opI.value=st.opacity;
+  opI.onchange = ()=>act(()=>{ st.opacity = clamp(parseFloat(opI.value)||1,0,1); });
+  opRow.append(opL,opI); sec.appendChild(opRow);
+
+  const dashRow = document.createElement('div'); dashRow.className='row';
+  const dashL = document.createElement('label'); dashL.textContent='破線';
+  const dashB = document.createElement('button'); dashB.className='tb-btn'+(st.dash?' on':'');
+  dashB.textContent = st.dash ? 'ON' : 'OFF';
+  dashB.onclick = ()=>act(()=>{ st.dash = !st.dash; });
+  dashRow.append(dashL,dashB); sec.appendChild(dashRow);
+  ins.appendChild(sec);
+}
+
+/** 複数選択時: style を持つオブジェクトだけをまとめて一括編集する（6.5） */
+function buildMultiStyleSection(ins, sel){
+  const styled = sel.filter(s => Shapes[s.type] && s.style);
+  if(styled.length === 0) return;
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent=`スタイル一括変更（${styled.length}件）`;
+  sec.appendChild(h);
+  const first = styleOf(styled[0]);
+  const ensureStyle = s => { s.style = s.style || {...DEFAULT_STYLE}; return s.style; };
+
+  sec.appendChild(color('線色', first.stroke, v=>act(()=>{
+    styled.forEach(s=>{ ensureStyle(s).stroke = v; });
+  })));
+  sec.appendChild(num('線幅', first.width, v=>act(()=>{
+    const cv = clamp(v,1,20); styled.forEach(s=>{ ensureStyle(s).width = cv; });
+  }), 0.5));
+
+  const opRow = document.createElement('div'); opRow.className='row';
+  const opL = document.createElement('label'); opL.textContent='不透明度';
+  const opI = document.createElement('input'); opI.type='number'; opI.min=0; opI.max=1; opI.step=0.05; opI.value=first.opacity;
+  opI.onchange = ()=>act(()=>{
+    const cv = clamp(parseFloat(opI.value)||1,0,1); styled.forEach(s=>{ ensureStyle(s).opacity = cv; });
+  });
+  opRow.append(opL,opI); sec.appendChild(opRow);
+
+  const dashRow = document.createElement('div'); dashRow.className='row';
+  const dashL = document.createElement('label'); dashL.textContent='破線';
+  const dashB = document.createElement('button'); dashB.className='tb-btn'+(first.dash?' on':'');
+  dashB.textContent = first.dash ? 'ON' : 'OFF';
+  dashB.onclick = ()=>act(()=>{
+    const nv = !first.dash; styled.forEach(s=>{ ensureStyle(s).dash = nv; });
+  });
+  dashRow.append(dashL,dashB); sec.appendChild(dashRow);
+  ins.appendChild(sec);
+}
+
+function buildLineInspector(ins, s){
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='直線'; h.style.marginBottom='9px';
+  ins.appendChild(h);
+  buildStyleSection(ins, s);
+}
+
+function buildArrowInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='矢印';
+  sec.appendChild(h);
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='矢じり';
+  const b = document.createElement('button'); b.className='tb-btn';
+  b.textContent = s.head==='both' ? '両側' : '片側';
+  b.onclick = ()=>act(()=>{ s.head = s.head==='both' ? 'end' : 'both'; });
+  row.append(l,b); sec.appendChild(row);
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+}
+
+function buildRectInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='矩形ゾーン';
+  sec.appendChild(h);
+  const st = s.style = s.style || {...DEFAULT_STYLE};
+  sec.appendChild(color('塗り色', st.fill, v=>act(()=>{ st.fill=v; })));
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='塗り不透明度';
+  const i = document.createElement('input'); i.type='number'; i.min=0; i.max=1; i.step=0.05; i.value=st.fillOpacity;
+  i.onchange = ()=>act(()=>{ st.fillOpacity = clamp(parseFloat(i.value)||0,0,1); });
+  row.append(l,i); sec.appendChild(row);
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+}
+
+function buildHLineInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='水平ライン';
+  sec.appendChild(h);
+  sec.appendChild(num('価格', s.y, v=>act(()=>{ s.y = v; })));
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+}
+
+function buildPenInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='ペン';
+  sec.appendChild(h);
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+}
+
+function buildTextInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='テキスト';
+  sec.appendChild(h);
+  sec.appendChild(num('フォントサイズ', s.fontSize||16, v=>act(()=>{ s.fontSize=clamp(v,8,120); }), 1));
+  const st = s.style = s.style || {...DEFAULT_STYLE};
+  sec.appendChild(color('文字色', st.stroke, v=>act(()=>{ st.stroke=v; })));
+
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='揃え';
+  const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.gap='4px';
+  for(const [a,label] of [['left','左'],['center','中'],['right','右']]){
+    const bt = document.createElement('button'); bt.className='tb-btn'+(((s.align||'left')===a)?' on':'');
+    bt.textContent = label;
+    bt.onclick = ()=>act(()=>{ s.align = a; });
+    wrap.appendChild(bt);
+  }
+  row.append(l,wrap); sec.appendChild(row);
+
+  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
+  hint.textContent = 'ダブルクリックで再編集';
+  sec.appendChild(hint);
+  ins.appendChild(sec);
+}
+
+function buildNoteInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='付箋';
+  sec.appendChild(h);
+  const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.gap='6px'; wrap.style.flexWrap='wrap';
+  for(const c of NOTE_COLORS){
+    const sw = document.createElement('button');
+    sw.style.width='26px'; sw.style.height='26px'; sw.style.borderRadius='6px'; sw.style.cursor='pointer';
+    sw.style.background=c; sw.style.border = (s.bg===c) ? '2px solid var(--accent)' : '1px solid var(--border)';
+    sw.onclick = ()=>act(()=>{ s.bg = c; });
+    wrap.appendChild(sw);
+  }
+  sec.appendChild(wrap);
+  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
+  hint.textContent = 'ダブルクリックで再編集';
+  sec.appendChild(hint);
+  ins.appendChild(sec);
+}
+
+function buildFibInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='フィボナッチ';
+  sec.appendChild(h);
+
+  const grid = document.createElement('div');
+  grid.style.display = 'grid'; grid.style.gridTemplateColumns = '1fr 1fr'; grid.style.gap = '5px 8px';
+  grid.style.marginBottom = '8px';
+  for(const lvl of FIB_STANDARD_LEVELS){
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-dim);cursor:pointer';
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    cb.checked = s.levels.includes(lvl);
+    cb.onchange = ()=>act(()=>{
+      if(cb.checked){ if(!s.levels.includes(lvl)) s.levels.push(lvl); }
+      else { s.levels = s.levels.filter(v=>v!==lvl); }
+      s.levels.sort((a,b)=>a-b);
+    });
+    row.append(cb, document.createTextNode(String(lvl)));
+    grid.appendChild(row);
+  }
+  sec.appendChild(grid);
+
+  const extRow = document.createElement('div'); extRow.className='row';
+  const extL = document.createElement('label'); extL.textContent='拡張レベル';
+  const extB = document.createElement('button'); extB.className='tb-btn'+(s.extend?' on':'');
+  extB.textContent = s.extend ? 'ON' : 'OFF';
+  extB.onclick = ()=>act(()=>{ s.extend = !s.extend; });
+  extRow.append(extL, extB); sec.appendChild(extRow);
+
+  const priceRow = document.createElement('div'); priceRow.className='row';
+  const priceL = document.createElement('label'); priceL.textContent='価格表示';
+  const priceB = document.createElement('button'); priceB.className='tb-btn'+(s.showPrice?' on':'');
+  priceB.textContent = s.showPrice ? 'ON' : 'OFF';
+  priceB.onclick = ()=>act(()=>{ s.showPrice = !s.showPrice; });
+  priceRow.append(priceL, priceB); sec.appendChild(priceRow);
+
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+}
+
+function buildBoardInspector(ins){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='ボード設定';
+  sec.appendChild(h);
+  const S = board.settings;
+  sec.appendChild(num('グリッド幅', S.grid, v=>{ S.grid = clamp(Math.round(v)||1,2,200); touch(); requestRender(); syncUI(); }));
+  sec.appendChild(num('ローソク幅', S.candleWidth, v=>{ S.candleWidth = clamp(v,2,400); touch(); requestRender(); syncUI(); }));
+  sec.appendChild(color('陽線', S.bullColor, v=>{ S.bullColor=v; touch(); requestRender(); }));
+  sec.appendChild(color('陰線', S.bearColor, v=>{ S.bearColor=v; touch(); requestRender(); }));
+
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='実体';
+  const b = document.createElement('button'); b.className='tb-btn';
+  b.textContent = S.bodyFill==='solid' ? '塗りつぶし' : '中空';
+  b.onclick = ()=>{ S.bodyFill = S.bodyFill==='solid'?'hollow':'solid'; touch(); requestRender(); syncUI(); };
+  row.append(l,b); sec.appendChild(row);
+
+  const snapRow = document.createElement('div'); snapRow.className='row';
+  const snapL = document.createElement('label'); snapL.textContent='スナップ';
+  const snapB = document.createElement('button'); snapB.className='tb-btn'+(S.snap?' on':'');
+  snapB.textContent = S.snap ? 'ON' : 'OFF';
+  snapB.onclick = ()=>{ S.snap = !S.snap; touch(); syncUI(); };
+  snapRow.append(snapL,snapB); sec.appendChild(snapRow);
+
+  const themeRow = document.createElement('div'); themeRow.className='row';
+  const themeL = document.createElement('label'); themeL.textContent='テーマ';
+  const themeB = document.createElement('button'); themeB.className='tb-btn';
+  themeB.textContent = S.theme==='light' ? 'ライト' : 'ダーク';
+  themeB.title = '表示への反映は今後のアップデートで対応予定です';
+  themeB.onclick = ()=>{ S.theme = S.theme==='light' ? 'dark' : 'light'; touch(); syncUI(); };
+  themeRow.append(themeL,themeB); sec.appendChild(themeRow);
+
+  ins.appendChild(sec);
+
+  const e = document.createElement('div'); e.className='empty';
+  e.innerHTML = 'K を押してドラッグ<br>ローソク足を描けます<br><br>? キーでショートカット一覧';
+  ins.appendChild(e);
+}
+
+/** ドラッグ中に O/H/L/C の数値だけ更新（DOM 再構築はしない） */
+function syncInspectorValues(){
+  const sel = selected();
+  if(sel.length===1 && sel[0].type==='candle'){
+    const k = sel[0];
+    for(const i of document.querySelectorAll('[data-ohlc]')) i.value = k[i.dataset.ohlc];
+  }
+  syncTopbar();
+}
+
+/* ---- トップバーのイベント ---- */
+$('btnSnap').onclick = ()=>{ board.settings.snap = !board.settings.snap; touch(); syncTopbar(); };
+$('btnZoomIn').onclick = ()=>zoomAtCenter(1.25);
+$('btnZoomOut').onclick = ()=>zoomAtCenter(1/1.25);
+$('btnFit').onclick = fitToContent;
+$('lblZoom').onclick = ()=>{ cam().zoom=1; requestRender(); syncTopbar(); };
+$('btnHelp').onclick = ()=>{ $('help').hidden = !$('help').hidden; };
+$('help').onclick = e=>{ if(e.target.id==='help') $('help').hidden = true; };
+$('boardName').onchange = e=>{
+  board.name = e.target.value || '無題のボード';
+  e.target.value = board.name;
+  touch();
+  if($('boardDrawer').classList.contains('open')) refreshBoardList();
+};
+$('btnBoards').onclick = ()=>{
+  if($('boardDrawer').classList.contains('open')) closeBoardDrawer();
+  else openBoardDrawer();
+};
+$('boardDrawer').querySelector('.backdrop').onclick = closeBoardDrawer;
+$('btnNewBoard').onclick = createNewBoard;
+
+/* ---- JSON 入出力のイベント ---- */
+$('btnExportCurrent').onclick = exportCurrentBoard;
+$('btnExportAll').onclick = exportAllBoards;
+$('btnImport').onclick = () => $('importFileInput').click();
+$('importFileInput').addEventListener('change', e=>{
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';   // 同じファイルを続けて選び直せるようにする
+  if(file) handleImportFile(file);
+});
+{
+  const stageEl = $('stage');
+  let dragDepth = 0;   // 子要素間の dragenter/dragleave の連鎖でも drag-over を消さないためのカウンタ
+  stageEl.addEventListener('dragover', e=>{
+    if(!e.dataTransfer || !Array.from(e.dataTransfer.types||[]).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  stageEl.addEventListener('dragenter', e=>{
+    if(!e.dataTransfer || !Array.from(e.dataTransfer.types||[]).includes('Files')) return;
+    e.preventDefault();
+    dragDepth++;
+    stageEl.classList.add('drag-over');
+  });
+  stageEl.addEventListener('dragleave', ()=>{
+    dragDepth = Math.max(0, dragDepth-1);
+    if(dragDepth===0) stageEl.classList.remove('drag-over');
+  });
+  stageEl.addEventListener('drop', e=>{
+    dragDepth = 0;
+    stageEl.classList.remove('drag-over');
+    if(!e.dataTransfer) return;
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(file){ e.preventDefault(); handleImportFile(file); }
+  });
+}
+
+function zoomAtCenter(f){
+  const c = cam();
+  const before = s2w(W/2,H/2);
+  c.zoom = clamp(c.zoom*f, 0.1, 8);
+  c.x = before.x - (W/2)/c.zoom;
+  c.y = before.y - (H/2)/c.zoom;
+  requestRender(); syncTopbar();
+}
+
+/* ==========================================================================
+   12. 永続化: IndexedDB 自動保存 + 旧 localStorage からの一度きりの移行
+   --------------------------------------------------------------------------
+   DB: candleboard / store: boards (keyPath:'id')。
+   複数ボード管理・JSON入出力は Phase 6B/6C で実装する。ここでは touch()/起動時
+   読み込みの土台だけを作る。
+   ========================================================================== */
+const DB_NAME = 'candleboard', DB_VERSION = 1, STORE_NAME = 'boards';
+const LAST_BOARD_KEY = 'candleboard.lastBoardId';   // localStorage: 最後に開いたボードの id のみ保存
+const LEGACY_KEY = 'candleboard.temp.v1';           // Phase 1-5 の暫定 localStorage 保存キー（移行後に削除）
+
+let dbPromise = null;
+function openDB(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject)=>{
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath:'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+/** 1トランザクションで完結する書き込み。put() 呼び出し時点の内容がそのままコミットされる */
+function dbPutBoard(b){
+  return openDB().then(db => new Promise((resolve, reject)=>{
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(b);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function dbGetBoard(id){
+  return openDB().then(db => new Promise((resolve, reject)=>{
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
+/* ---- 保存状態インジケータ（トップバー） ---- */
+let saveState = 'saved';   // 'dirty' | 'saving' | 'saved'
+let saveFadeTimer = null;
+function setSaveState(state){
+  saveState = state;
+  const el = $('saveStatus');
+  if(!el) return;
+  clearTimeout(saveFadeTimer);
+  el.classList.remove('fade');
+  if(state === 'dirty') el.textContent = '未保存';
+  else if(state === 'saving') el.textContent = '保存中…';
+  else {
+    el.textContent = '保存済';
+    saveFadeTimer = setTimeout(()=>{ if(saveState==='saved') el.classList.add('fade'); }, 2000);
+  }
+}
+
+/** board への変更後に呼ぶ。関数名・引数は変えず、中身だけ IndexedDB 書き込みに差し替えてある */
+let saveTimer = null;
+function touch(){
+  board.updatedAt = Date.now();
+  setSaveState('dirty');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>{
+    setSaveState('saving');
+    dbPutBoard(board).then(()=>{
+      try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+      setSaveState('saved');
+    }).catch(err=>{
+      console.error('[CandleBoard] 保存に失敗しました', err);
+      setSaveState('dirty');   // 失敗時は未保存表示のままにし、次の touch() や再試行に委ねる
+    });
+  }, 500);
+}
+
+/** 読み込んだ素の board データをアプリの内部形式に正規化する（ロード経路すべてで通す） */
+function hydrateBoard(raw){
+  const b = Object.assign(newBoard(), raw);
+  b.settings = Object.assign(newBoard().settings, raw.settings||{});
+  b.objects.forEach(o=>{ if(o.type==='candle') normalizeCandle(o); });
+  return b;
+}
+
+/** 旧 localStorage 保存（Phase 1-5 の暫定実装）が残っていれば IndexedDB へ一度だけ移行する */
+function migrateLegacyIfNeeded(){
+  let raw;
+  try{ raw = localStorage.getItem(LEGACY_KEY); }catch(_){ return Promise.resolve(null); }
+  if(!raw) return Promise.resolve(null);
+  let legacy;
+  try{ legacy = JSON.parse(raw); }catch(_){ legacy = null; }
+  if(!legacy || !Array.isArray(legacy.objects)){
+    try{ localStorage.removeItem(LEGACY_KEY); }catch(_){}
+    return Promise.resolve(null);
+  }
+  const b = hydrateBoard(legacy);
+  return dbPutBoard(b).then(()=>{
+    try{
+      localStorage.setItem(LAST_BOARD_KEY, b.id);
+      localStorage.removeItem(LEGACY_KEY);   // 移行が成功した場合のみ旧データを消す
+    }catch(_){}
+    return b;
+  });
+}
+
+/** 起動時のボード読み込み: 1) 旧データの移行 → 2) lastBoardId から復元 → 3) 両方なければ null */
+async function loadInitialBoard(){
+  const migrated = await migrateLegacyIfNeeded().catch(err=>{ console.error('[CandleBoard] 旧データの移行に失敗しました', err); return null; });
+  if(migrated) return migrated;
+  let lastId = null;
+  try{ lastId = localStorage.getItem(LAST_BOARD_KEY); }catch(_){}
+  if(!lastId) return null;
+  const raw = await dbGetBoard(lastId).catch(err=>{ console.error('[CandleBoard] ボードの読み込みに失敗しました', err); return null; });
+  if(!raw || !Array.isArray(raw.objects)) return null;
+  return hydrateBoard(raw);
+}
+
+/* ==========================================================================
+   13. 複数ボード管理
+   --------------------------------------------------------------------------
+   ドロワー UI・新規作成/複製/リネーム/削除、ボード切替時の保存→履歴クリア→
+   読込の順序を厳守する。削除確認は自前モーダル（confirm() は使わない）。
+   ========================================================================== */
+function dbGetAllBoards(){
+  return openDB().then(db => new Promise((resolve, reject)=>{
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  }));
+}
+function dbDeleteBoard(id){
+  return openDB().then(db => new Promise((resolve, reject)=>{
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
+/** 保留中のデバウンス保存があれば即座にフラッシュする（ボード切替前に必ず呼ぶ） */
+function flushSave(){
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  setSaveState('saving');
+  return dbPutBoard(board).then(()=>{
+    try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+    setSaveState('saved');
+  }).catch(err=>{
+    console.error('[CandleBoard] 保存に失敗しました', err);
+    setSaveState('dirty');
+  });
+}
+
+/** 現在の描画/選択/編集状態をリセットする（ボード切替系の操作すべてで共通） */
+function resetInteractionState(){
+  finalizeEditing();
+  ui.drag = null;
+  ui.selection = new Set();
+  ui.hoverId = null; ui.hoverHandle = null;
+  history.undo.length = 0;   // ★ 別ボードのUndoが現在のボードに適用されるのを防ぐ
+  history.redo.length = 0;
+}
+
+/** ボードを切り替える。現在のボードを保存 → 履歴クリア → 新しいボードを読み込む */
+async function switchToBoard(id){
+  if(id === board.id) return;
+  await flushSave();
+  const raw = await dbGetBoard(id).catch(err=>{ console.error('[CandleBoard] ボード読込失敗', err); return null; });
+  if(!raw){ await refreshBoardList(); return; }
+  resetInteractionState();
+  board = hydrateBoard(raw);
+  try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+  $('boardName').value = board.name;
+  resizeCanvas();
+  syncUI();
+  requestAnimationFrame(()=>{ fitToContent(); });
+  setSaveState('saved');
+}
+
+async function createNewBoard(){
+  await flushSave();
+  resetInteractionState();
+  board = newBoard();
+  await dbPutBoard(board);
+  try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+  $('boardName').value = board.name;
+  resizeCanvas(); syncUI();
+  requestAnimationFrame(()=>{ fitToContent(); });
+  setSaveState('saved');
+  closeBoardDrawer();
+}
+
+async function duplicateBoard(id){
+  const raw = id===board.id ? board : await dbGetBoard(id);
+  if(!raw) return;
+  const copy = clone(raw);
+  copy.id = uid();
+  copy.name = raw.name + ' のコピー';
+  copy.createdAt = Date.now();
+  copy.updatedAt = Date.now();
+  await dbPutBoard(copy);
+  await refreshBoardList();
+}
+
+async function renameBoard(id, name){
+  name = name.trim() || '無題のボード';
+  if(id === board.id){
+    board.name = name;
+    $('boardName').value = name;
+    touch();
+  } else {
+    const raw = await dbGetBoard(id);
+    if(!raw) return;
+    raw.name = name;
+    raw.updatedAt = Date.now();
+    await dbPutBoard(raw);
+  }
+  await refreshBoardList();
+}
+
+async function deleteBoard(id){
+  const all = await dbGetAllBoards();
+  if(all.length <= 1) return;   // 最低1枚は残す
+  await dbDeleteBoard(id);
+  if(id === board.id){
+    const remaining = (await dbGetAllBoards()).sort((a,b)=>b.updatedAt-a.updatedAt);
+    if(remaining[0]){
+      resetInteractionState();
+      board = hydrateBoard(remaining[0]);
+      try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+      $('boardName').value = board.name;
+      resizeCanvas(); syncUI();
+      requestAnimationFrame(()=>{ fitToContent(); });
+      setSaveState('saved');
+    }
+  }
+  await refreshBoardList();
+}
+
+function openBoardDrawer(){ $('boardDrawer').classList.add('open'); refreshBoardList(); }
+function closeBoardDrawer(){ $('boardDrawer').classList.remove('open'); }
+
+async function refreshBoardList(){
+  const listEl = $('boardList');
+  const all = await dbGetAllBoards().catch(()=>[]);
+  all.sort((a,b)=>b.updatedAt-a.updatedAt);
+  listEl.innerHTML = '';
+  for(const b of all){
+    const item = document.createElement('div');
+    item.className = 'board-item' + (b.id===board.id ? ' current' : '');
+    const nameRow = document.createElement('div'); nameRow.className='bi-name';
+    nameRow.textContent = b.name || '無題のボード';
+    item.appendChild(nameRow);
+    const meta = document.createElement('div'); meta.className='bi-meta';
+    const d = new Date(b.updatedAt);
+    meta.textContent = `${d.toLocaleDateString('ja-JP')} ${d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} ・ ${(b.objects||[]).length}個`;
+    item.appendChild(meta);
+    const actions = document.createElement('div'); actions.className='bi-actions';
+    const btnRename = document.createElement('button'); btnRename.type='button'; btnRename.textContent='リネーム';
+    btnRename.onclick = (e)=>{ e.stopPropagation(); startRenameInline(item, nameRow, b); };
+    const btnDup = document.createElement('button'); btnDup.type='button'; btnDup.textContent='複製';
+    btnDup.onclick = (e)=>{ e.stopPropagation(); duplicateBoard(b.id); };
+    const btnDel = document.createElement('button'); btnDel.type='button'; btnDel.textContent='削除'; btnDel.className='danger';
+    if(all.length<=1){
+      btnDel.disabled = true; btnDel.title = '最後の1枚は削除できません';
+    } else {
+      btnDel.onclick = (e)=>{
+        e.stopPropagation();
+        showConfirm(`「${b.name || '無題のボード'}」を削除しますか？この操作は取り消せません。`, ()=>{ deleteBoard(b.id); });
+      };
+    }
+    actions.append(btnRename, btnDup, btnDel);
+    item.appendChild(actions);
+    item.onclick = ()=>{ switchToBoard(b.id).then(closeBoardDrawer); };
+    listEl.appendChild(item);
+  }
+}
+
+function startRenameInline(item, nameRow, b){
+  const input = document.createElement('input');
+  input.type='text'; input.value = b.name;
+  nameRow.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const commit = ()=>{ if(done) return; done = true; renameBoard(b.id, input.value); };
+  input.addEventListener('click', e=>e.stopPropagation());
+  input.addEventListener('keydown', e=>{
+    e.stopPropagation();
+    if(e.key==='Enter'){ e.preventDefault(); input.blur(); }
+    else if(e.key==='Escape'){ e.preventDefault(); done = true; input.value = b.name; input.blur(); refreshBoardList(); }
+  });
+  input.addEventListener('blur', commit, { once:true });
+}
+
+/** 自前の削除確認モーダル。confirm() は使わない（ポインタキャプチャ中に呼ぶと状態機械が固まるため） */
+function showConfirm(message, onConfirm){
+  $('confirmMsg').textContent = message;
+  $('confirmModal').hidden = false;
+  const okBtn = $('confirmOk'), cancelBtn = $('confirmCancel');
+  const cleanup = () => { $('confirmModal').hidden = true; okBtn.onclick=null; cancelBtn.onclick=null; };
+  okBtn.onclick = () => { cleanup(); onConfirm(); };
+  cancelBtn.onclick = () => { cleanup(); };
+}
+
+/* ==========================================================================
+   14. JSON 入出力
+   --------------------------------------------------------------------------
+   エクスポート形式: { format:'candleboard', version:1, exportedAt, boards:[...] }
+   インポートはファイル選択 + キャンバスへの D&D の両方から handleImportFile() に集約する。
+   壊れたJSON/未知typeでも例外を投げず、必ずユーザーに分かる形でメッセージを出す。
+   ========================================================================== */
+const KNOWN_TYPES = new Set(Object.keys(Shapes));
+
+/** 汎用モーダル（メッセージ + 任意ボタン群）。confirm()/alert() は使わない */
+let msgModalFinish = null;
+function showModal({ title, message, buttons } = {}){
+  return new Promise(resolve=>{
+    const titleEl = $('msgTitle');
+    titleEl.hidden = !title;
+    titleEl.textContent = title || '';
+    $('msgText').textContent = message || '';
+    const actions = $('msgActions');
+    actions.innerHTML = '';
+    const finish = (val)=>{
+      $('msgModal').hidden = true;
+      msgModalFinish = null;
+      resolve(val);
+    };
+    const list = (buttons && buttons.length) ? buttons : [{ label:'OK', value:true, primary:true }];
+    for(const b of list){
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tb-btn' + (b.danger ? ' danger' : '') + (b.primary ? ' on' : '');
+      btn.textContent = b.label;
+      btn.onclick = () => finish(b.value);
+      actions.appendChild(btn);
+    }
+    msgModalFinish = finish;
+    $('msgModal').hidden = false;
+  });
+}
+function showMessage(message, title){
+  return showModal({ title, message, buttons:[{ label:'OK', value:true, primary:true }] });
+}
+
+function sanitizeFilename(name){
+  const cleaned = String(name || 'board').replace(/[\\/:*?"<>|]/g, '_').trim();
+  return cleaned || 'board';
+}
+function todayStamp(){
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+function downloadJSON(filename, dataObj){
+  const blob = new Blob([JSON.stringify(dataObj, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function exportCurrentBoard(){
+  await flushSave();
+  const payload = { format:'candleboard', version:1, exportedAt:new Date().toISOString(), boards:[clone(board)] };
+  downloadJSON(`${sanitizeFilename(board.name)}-${todayStamp()}.json`, payload);
+  closeBoardDrawer();
+}
+async function exportAllBoards(){
+  await flushSave();
+  const all = await dbGetAllBoards().catch(() => []);
+  all.sort((a, b) => b.updatedAt - a.updatedAt);
+  const payload = { format:'candleboard', version:1, exportedAt:new Date().toISOString(), boards:all };
+  downloadJSON(`全ボード-${todayStamp()}.json`, payload);
+  closeBoardDrawer();
+}
+
+/** 読み込んだ raw board から既知typeのオブジェクトだけを抽出し、candleは正規化する。除外件数を返す */
+function sanitizeImportedBoard(raw){
+  const b = hydrateBoard(raw && typeof raw === 'object' ? raw : {});
+  const srcObjects = Array.isArray(raw && raw.objects) ? raw.objects : [];
+  let unknownCount = 0;
+  const objects = [];
+  for(const o of srcObjects){
+    if(!o || typeof o !== 'object' || !KNOWN_TYPES.has(o.type)){ unknownCount++; continue; }
+    const copy = clone(o);
+    if(!copy.id) copy.id = uid();
+    objects.push(copy.type === 'candle' ? normalizeCandle(copy) : copy);
+  }
+  b.objects = objects;
+  return { board:b, unknownCount };
+}
+
+/** ファイル選択・D&D どちらからも呼ばれる共通の取り込みエントリポイント */
+async function handleImportFile(file){
+  if(!file){ return; }
+
+  let text;
+  try{ text = await file.text(); }
+  catch(err){
+    console.error('[CandleBoard] ファイル読み込みに失敗しました', err);
+    await showMessage('ファイルの読み込みに失敗しました。', 'インポートエラー');
+    return;
+  }
+
+  let data;
+  try{ data = JSON.parse(text); }
+  catch(err){
+    console.error('[CandleBoard] JSON の解析に失敗しました', err);
+    await showMessage('JSON の解析に失敗しました。ファイルが壊れているか、JSON形式ではない可能性があります。', 'インポートエラー');
+    return;
+  }
+
+  if(!data || typeof data !== 'object' || data.format !== 'candleboard'){
+    await showMessage(`このファイルは CandleBoard 形式ではないようです（format: ${data && typeof data === 'object' ? (data.format ?? '(なし)') : '不明'}）。`, 'インポートエラー');
+    return;
+  }
+  if(typeof data.version !== 'number' || data.version < 1 || data.version > 1){
+    await showMessage(`未対応のバージョンです（version: ${data.version}）。このアプリは version 1 のみ読み込めます。`, 'インポートエラー');
+    return;
+  }
+  if(!Array.isArray(data.boards) || data.boards.length === 0){
+    await showMessage('読み込めるボードデータが見つかりませんでした。', 'インポートエラー');
+    return;
+  }
+
+  let unknownTotal = 0;
+  const sanitized = [];
+  for(const raw of data.boards){
+    try{
+      const { board:b, unknownCount } = sanitizeImportedBoard(raw);
+      unknownTotal += unknownCount;
+      sanitized.push(b);
+    }catch(err){
+      console.error('[CandleBoard] ボードデータの読み込み中にエラーが発生しました（このボードはスキップします）', err);
+    }
+  }
+  if(sanitized.length === 0){
+    await showMessage('有効なボードデータが1件も見つかりませんでした。', 'インポートエラー');
+    return;
+  }
+
+  const mode = await showModal({
+    title:'JSON の読み込み',
+    message:`${sanitized.length} 件のボードが見つかりました。\n新しいボードとして追加しますか？現在開いているボードを置き換えますか？`,
+    buttons:[
+      { label:'キャンセル', value:'cancel' },
+      { label:'現在のボードを置換', value:'replace', danger:true },
+      { label:'新規ボードとして追加', value:'add', primary:true },
+    ],
+  });
+
+  if(mode === 'add'){
+    await flushSave();
+    let firstNewId = null;
+    for(const b of sanitized){
+      const copy = clone(b);
+      copy.id = uid();                                   // ★ 既存ボードと衝突しないよう振り直す
+      copy.objects = copy.objects.map(o => ({ ...clone(o), id: uid() }));   // ★ 全オブジェクトIDも振り直す
+      copy.createdAt = Date.now();
+      copy.updatedAt = Date.now();
+      await dbPutBoard(copy);
+      if(firstNewId === null) firstNewId = copy.id;
+    }
+    if($('boardDrawer').classList.contains('open')) await refreshBoardList();
+    if(firstNewId) await switchToBoard(firstNewId);
+  } else if(mode === 'replace'){
+    await flushSave();
+    const src = sanitized[0];
+    const replacement = clone(src);
+    replacement.id = board.id;                            // 現在のボードの枠を維持したまま中身だけ差し替える
+    replacement.createdAt = board.createdAt;
+    replacement.updatedAt = Date.now();
+    resetInteractionState();
+    board = hydrateBoard(replacement);
+    await dbPutBoard(board);
+    try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+    $('boardName').value = board.name;
+    resizeCanvas();
+    syncUI();
+    requestAnimationFrame(() => { fitToContent(); });
+    setSaveState('saved');
+    if($('boardDrawer').classList.contains('open')) await refreshBoardList();
+  } else {
+    return;   // キャンセル
+  }
+
+  if(unknownTotal > 0){
+    await showMessage(`${unknownTotal} 件の未対応オブジェクト（不明な type）は読み込みから除外されました。`, 'インポート完了');
+  }
+}
+
+/* ==========================================================================
+   15. 起動
+   ========================================================================== */
+function seedDemo(){
+  const g = board.settings.grid;
+  const step = Math.max(g, Math.round(board.settings.candleWidth*1.6/g)*g);   // Enter 複製と同じ間隔
+  const data = [[0,3,-2,2],[2,5,1,4],[4,6,-1,0],[0,2,-4,-3],[-3,1,-5,0],[0,7,-1,6],[6,8,3,4]];
+  data.forEach((d,i)=>{
+    board.objects.push(normalizeCandle({
+      id:uid(), type:'candle', x: i*step,
+      o:d[0]*g, h:d[1]*g, l:d[2]*g, c:d[3]*g,
+    }));
+  });
+}
+
+async function boot(){
+  buildToolbar();
+  setSaveState('saved');
+  let loaded = null;
+  try{ loaded = await loadInitialBoard(); }
+  catch(err){ console.error('[CandleBoard] 起動時読み込みでエラーが発生しました', err); }
+
+  if(loaded){
+    board = loaded;
+  } else {
+    seedDemo();
+    try{ localStorage.setItem(LAST_BOARD_KEY, board.id); }catch(_){}
+  }
+  $('boardName').value = board.name;
+  resizeCanvas();
+  syncUI();
+  requestAnimationFrame(()=>{ fitToContent(); });
+}
+boot();
+</script>
+</body>
+</html>
