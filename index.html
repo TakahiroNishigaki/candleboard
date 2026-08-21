@@ -278,6 +278,9 @@ body{
     <tr><td class="k">Ctrl + Z / Ctrl + Shift + Z</td><td>Undo / Redo</td></tr>
     <tr><td class="k">Ctrl + ] / Ctrl + [</td><td>最前面へ / 最背面へ</td></tr>
     <tr><td class="k">Alt（押しながら）</td><td>スナップ一時解除</td></tr>
+    <tr><td class="k">Shift（直線/矢印の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
+    <tr><td class="k">Shift（フィボナッチの端点ドラッグ中）</td><td>価格（Y）を固定し水平方向にのみ移動</td></tr>
+    <tr><td class="k">Shift（矩形ゾーンの作成/角ハンドルドラッグ中）</td><td>正方形に制約</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
     <tr><td class="grp" colspan="2">ボード / データ</td></tr>
@@ -568,13 +571,17 @@ function distToSegment(px,py, x1,y1,x2,y2){
   t = clamp(t,0,1);
   return Math.hypot(px-(x1+t*dx), py-(y1+t*dy));
 }
-/** Shift 押下時の角度スナップ（45度刻み）。始点からの距離は保つ */
+/** Shift 押下時の角度スナップ（45度刻み、水平・垂直を含む）。始点からの距離は保つ */
 function snapAngle45(x1,y1,x2,y2){
   const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy);
   if(len < 1e-6) return {x2,y2};
   const step = Math.PI/4;
   const ang = Math.round(Math.atan2(dy,dx)/step)*step;
-  return { x2:x1+Math.cos(ang)*len, y2:y1+Math.sin(ang)*len };
+  let ndx = Math.cos(ang)*len, ndy = Math.sin(ang)*len;
+  // Math.cos/sin(±π/2 等)は丸め誤差で厳密な 0 にならないため、水平/垂直が真に一直線になるよう明示的にゼロ化する
+  if(Math.abs(ndx) < len*1e-9) ndx = 0;
+  if(Math.abs(ndy) < len*1e-9) ndy = 0;
+  return { x2:x1+ndx, y2:y1+ndy };
 }
 function drawArrowHead(ctx, tipX, tipY, dirAng, size){
   const spread = Math.PI/7.5;
@@ -646,8 +653,13 @@ Shapes.line = {
   hit(s, p, tol){ return distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol; },
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
-  dragHandle(s, id, p){
-    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
+  dragHandle(s, id, p, ev){
+    let x=snapV(p.x,'x'), y=snapV(p.y,'y');
+    if(ev && ev.shiftKey){   // 反対側の端点を軸に45度刻み（水平/垂直含む）へ角度スナップ
+      const anchor = id==='1' ? {x:s.x2,y:s.y2} : {x:s.x1,y:s.y1};
+      const sn = snapAngle45(anchor.x, anchor.y, x, y);
+      x = sn.x2; y = sn.y2;
+    }
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -674,8 +686,13 @@ Shapes.arrow = {
   hit: (s,p,tol) => distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol,
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
-  dragHandle(s, id, p){
-    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
+  dragHandle(s, id, p, ev){
+    let x=snapV(p.x,'x'), y=snapV(p.y,'y');
+    if(ev && ev.shiftKey){   // 反対側の端点を軸に45度刻み（水平/垂直含む）へ角度スナップ
+      const anchor = id==='1' ? {x:s.x2,y:s.y2} : {x:s.x1,y:s.y1};
+      const sn = snapAngle45(anchor.x, anchor.y, x, y);
+      x = sn.x2; y = sn.y2;
+    }
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -721,7 +738,7 @@ Shapes.rect = {
     return [ {id:'nw',x,y},{id:'n',x:x+w/2,y},{id:'ne',x:x+w,y},{id:'e',x:x+w,y:y+h/2},
              {id:'se',x:x+w,y:y+h},{id:'s',x:x+w/2,y:y+h},{id:'sw',x,y:y+h},{id:'w',x,y:y+h/2} ];
   },
-  dragHandle(s, id, p){
+  dragHandle(s, id, p, ev){
     const x2=snapV(p.x,'x'), y2=snapV(p.y,'y');
     let {x,y,w,h} = s;
     const right=x+w, bottom=y+h;
@@ -729,6 +746,12 @@ Shapes.rect = {
     if(id.includes('e')){ const nx=Math.max(x2,x);     w=nx-x; }
     if(id.includes('n')){ const ny=Math.min(y2,bottom); h=bottom-ny; y=ny; }
     if(id.includes('s')){ const ny=Math.max(y2,y);      h=ny-y; }
+    if(ev && ev.shiftKey && id.length===2){   // 角ハンドル（nw/ne/se/sw）のみ Shift で正方形に制約。対角の固定点を基準に揃える
+      const m = Math.max(w,h);
+      w = m; h = m;
+      x = id.includes('w') ? right - m : x;
+      y = id.includes('n') ? bottom - m : y;
+    }
     s.x=x; s.y=y; s.w=Math.max(w,1); s.h=Math.max(h,1);
   },
 };
@@ -902,8 +925,10 @@ Shapes.fib = {
   },
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
-  dragHandle(s, id, p){
-    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
+  dragHandle(s, id, p, ev){
+    let x=snapV(p.x,'x'), y=snapV(p.y,'y');
+    // Shift: Y（価格＝レベル計算の基準）を固定し、水平方向（X）にのみ動かす
+    if(ev && ev.shiftKey){ y = (id==='1') ? s.y1 : s.y2; }
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -1435,10 +1460,12 @@ cv.addEventListener('pointerdown', e=>{
     const x0 = snapV(wp.x,'x'), y0 = snapV(wp.y,'y');
     ui.drag = {
       mode:'create', tool:'rect', x0, y0, preview:null,
-      onMove(wp){
+      onMove(wp, ev){
         const x2=snapV(wp.x,'x'), y2=snapV(wp.y,'y');
-        const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
-        const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
+        let w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
+        if(ev && ev.shiftKey){ w = h = Math.max(w,h); }   // Shift で正方形に制約
+        const x = (x2>=this.x0) ? this.x0 : this.x0-w;
+        const y = (y2>=this.y0) ? this.y0 : this.y0-h;
         this.preview = (w>=1 && h>=1) ? makeRect(x,y,w,h) : null;
       },
       commit(){
@@ -1447,7 +1474,7 @@ cv.addEventListener('pointerdown', e=>{
         return makeRect(this.x0, this.y0, g*6, g*3);
       },
     };
-    ui.drag.onMove(wp);
+    ui.drag.onMove(wp, e);
     requestRender(); return;
   }
 
@@ -1516,8 +1543,10 @@ cv.addEventListener('pointerdown', e=>{
     const x = snapV(wp.x,'x'), y = snapV(wp.y,'y');
     ui.drag = {
       mode:'create', tool:'fib', x1:x, y1:y, x2:x, y2:y, preview:null,
-      onMove(wp){
-        this.x2 = snapV(wp.x,'x'); this.y2 = snapV(wp.y,'y');
+      onMove(wp, ev){
+        this.x2 = snapV(wp.x,'x');
+        // Shift: Y（価格＝レベル計算の基準）を固定し、水平方向（X）にのみ動かす
+        this.y2 = (ev && ev.shiftKey) ? this.y2 : snapV(wp.y,'y');
         this.preview = makeFib(this.x1, this.y1, this.x2, this.y2);
       },
       commit(){
@@ -1525,7 +1554,7 @@ cv.addEventListener('pointerdown', e=>{
         return this.preview;
       },
     };
-    ui.drag.onMove(wp);
+    ui.drag.onMove(wp, e);
     requestRender(); return;
   }
 
@@ -1594,7 +1623,7 @@ cv.addEventListener('pointermove', e=>{
   }
   if(d.mode==='handle'){
     const s = byId(d.id); if(!s) return;
-    def(s).dragHandle(s, d.handle, wp);
+    def(s).dragHandle(s, d.handle, wp, e);
     requestRender(); syncInspectorValues(); return;
   }
   if(d.mode==='move'){
