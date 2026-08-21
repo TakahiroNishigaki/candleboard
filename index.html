@@ -258,7 +258,7 @@ body{
     <tr><td class="k">ホイール</td><td>上下パン</td></tr>
     <tr><td class="k">Shift + ホイール</td><td>左右パン</td></tr>
     <tr><td class="k">Ctrl/⌘ + ホイール</td><td>カーソル中心にズーム</td></tr>
-    <tr><td class="k">中ボタンドラッグ</td><td>パン</td></tr>
+    <tr><td class="k">右ボタンドラッグ</td><td>パン</td></tr>
     <tr><td class="k">Shift + 1</td><td>全体にフィット</td></tr>
     <tr><td class="k">Shift + 0 / ズーム率クリック</td><td>ズーム 100%</td></tr>
     <tr><td class="grp" colspan="2">ローソク足</td></tr>
@@ -1382,7 +1382,7 @@ cv.addEventListener('pointerdown', e=>{
   if(ui.editing) finalizeEditing();
 
   // --- パン ---
-  if(e.button===1 || ui.spaceHeld || ui.tool==='hand'){
+  if(e.button===2 || ui.spaceHeld || ui.tool==='hand'){
     ui.drag = { mode:'pan', sp, cam:{...cam()} };
     updateCursor(); return;
   }
@@ -1661,6 +1661,9 @@ cv.addEventListener('dblclick', e=>{
     startEditing(hit);
   }
 });
+
+// 右ボタンをパンに使うため、右クリックのブラウザ標準コンテキストメニューを抑止する
+cv.addEventListener('contextmenu', e=>{ e.preventDefault(); });
 
 /* ---- ホイール: パン / ズーム ---- */
 cv.addEventListener('wheel', e=>{
