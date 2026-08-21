@@ -248,6 +248,7 @@ body{
     <tr><td class="k">C</td><td>ローソク足</td></tr>
     <tr><td class="k">P</td><td>ペン（フリーハンド）</td></tr>
     <tr><td class="k">L</td><td>直線</td></tr>
+    <tr><td class="k">G</td><td>折れ線（連続した直線）</td></tr>
     <tr><td class="k">A</td><td>矢印</td></tr>
     <tr><td class="k">Shift + L</td><td>水平ライン</td></tr>
     <tr><td class="k">R</td><td>矩形ゾーン</td></tr>
@@ -267,6 +268,11 @@ body{
     <tr><td class="k">Enter</td><td>右隣に複製</td></tr>
     <tr><td class="k">Shift + Enter</td><td>左隣に複製</td></tr>
     <tr><td class="k">Ctrl + Shift + A</td><td>X 方向に等間隔整列</td></tr>
+    <tr><td class="grp" colspan="2">折れ線</td></tr>
+    <tr><td class="k">クリック</td><td>頂点を追加していく</td></tr>
+    <tr><td class="k">Enter / ダブルクリック</td><td>確定（最後の頂点をもう一度クリックでも可）</td></tr>
+    <tr><td class="k">Esc</td><td>描きかけを破棄</td></tr>
+    <tr><td class="k">Shift</td><td>直前の頂点から 45 度刻みに拘束</td></tr>
     <tr><td class="grp" colspan="2">編集</td></tr>
     <tr><td class="k">Shift + クリック</td><td>選択に追加 / 除外</td></tr>
     <tr><td class="k">Ctrl + A</td><td>全選択</td></tr>
@@ -278,7 +284,7 @@ body{
     <tr><td class="k">Ctrl + Z / Ctrl + Shift + Z</td><td>Undo / Redo</td></tr>
     <tr><td class="k">Ctrl + ] / Ctrl + [</td><td>最前面へ / 最背面へ</td></tr>
     <tr><td class="k">Alt（押しながら）</td><td>スナップ一時解除</td></tr>
-    <tr><td class="k">Shift（直線/矢印の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
+    <tr><td class="k">Shift（直線/矢印/折れ線の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
     <tr><td class="k">Shift（フィボナッチの端点ドラッグ中）</td><td>価格（Y）を固定し水平方向にのみ移動</td></tr>
     <tr><td class="k">Shift（矩形ゾーンの作成/角ハンドルドラッグ中）</td><td>正方形に制約</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
@@ -388,6 +394,7 @@ const ui = {
   clipboard: [],
   editing: null,       // { id, div } — text/note の contenteditable 編集中はここに入る
   lastParams: {},      // 型ごとの「直近に編集されたスタイル的パラメータ」。新規作成時の初期値に使う
+  poly: null,          // { pts:[x,y,...], cursor:{x,y} } — 折れ線の作図中。ui.drag と違いクリックをまたいで残る
 };
 
 /* ==========================================================================
@@ -564,6 +571,7 @@ const styleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
  *  candle は既存の board.settings（グリッド幅と同様の板全体設定）で見た目を管理しているため対象外。 */
 const CARRY_PARAMS = {
   line:  ['style'],
+  polyline: ['style'],
   arrow: ['style','head'],
   rect:  ['style'],
   hline: ['style'],
@@ -737,6 +745,64 @@ Shapes.arrow = {
       x = sn.x2; y = sn.y2;
     }
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
+  },
+};
+
+/* ---------- 折れ線（連続した直線。クリックで頂点を継ぎ足していく） ----------
+   pts は「ワールド絶対座標」の平坦配列 [x0,y0,x1,y1,...]。
+   pen が原点+相対座標なのは点列を書き換えないから Path2D をキャッシュできるため。
+   折れ線は頂点ごとにハンドルで編集する＝点列が変わるので、変換の要らない絶対座標で持つ。 */
+function makePolyline(pts){ return withLastParams('polyline', { id:uid(), type:'polyline', pts:pts.slice(), style:{...DEFAULT_STYLE} }); }
+/** 頂点数（pts は x,y ペアの平坦配列） */
+const polyCount = s => s.pts.length >> 1;
+const polyPt = (s, i) => ({ x:s.pts[i*2], y:s.pts[i*2+1] });
+Shapes.polyline = {
+  bbox(s){
+    const pad = Math.max(4, styleOf(s).width);
+    let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(let i=0;i<s.pts.length;i+=2){
+      const px=s.pts[i], py=s.pts[i+1];
+      if(px<x0)x0=px; if(px>x1)x1=px; if(py<y0)y0=py; if(py>y1)y1=py;
+    }
+    if(!isFinite(x0)) return {x:0,y:0,w:0,h:0};
+    return { x:x0-pad, y:y0-pad, w:(x1-x0)+pad*2, h:(y1-y0)+pad*2 };
+  },
+  draw(ctx, s){
+    if(s.pts.length < 4) return;
+    ctx.save();
+    applyStrokeStyle(ctx, s);
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(s.pts[0], s.pts[1]);
+    for(let i=2;i<s.pts.length;i+=2) ctx.lineTo(s.pts[i], s.pts[i+1]);
+    ctx.stroke();
+    ctx.restore();
+  },
+  hit(s, p, tol){
+    for(let i=0;i<s.pts.length-2;i+=2)
+      if(distToSegment(p.x,p.y, s.pts[i],s.pts[i+1], s.pts[i+2],s.pts[i+3]) <= tol) return true;
+    return false;
+  },
+  move(s, dx, dy){
+    for(let i=0;i<s.pts.length;i+=2){ s.pts[i]+=dx; s.pts[i+1]+=dy; }
+  },
+  // ハンドルIDは 'p0','p1'… の2文字以上にしておく（drawSelection が1文字IDだけラベルを描くため）
+  handles(s){
+    const out = [];
+    for(let i=0;i<polyCount(s);i++) out.push({ id:'p'+i, x:s.pts[i*2], y:s.pts[i*2+1] });
+    return out;
+  },
+  dragHandle(s, id, p, ev){
+    const i = parseInt(id.slice(1), 10);
+    if(!(i >= 0 && i < polyCount(s))) return;
+    let x=snapV(p.x,'x'), y=snapV(p.y,'y');
+    if(ev && ev.shiftKey){
+      // 隣の頂点（末尾なら1つ前、それ以外は1つ後ろ）を軸に45度刻みへ角度スナップ
+      const anchor = polyPt(s, i>0 ? i-1 : Math.min(1, polyCount(s)-1));
+      const sn = snapAngle45(anchor.x, anchor.y, x, y);
+      x = sn.x2; y = sn.y2;
+    }
+    s.pts[i*2] = x; s.pts[i*2+1] = y;
   },
 };
 
@@ -1055,6 +1121,7 @@ function render(){
   const vis = visibleObjects();
   for(const s of vis) def(s).draw(ctx, s);
   drawCreatePreview();
+  drawPolylineInProgress();
   ctx.restore();
 
   // --- スクリーン座標系のオーバーレイ ---
@@ -1134,6 +1201,33 @@ function drawCreatePreview(){
   ctx.globalAlpha = .75;
   def(d.preview).draw(ctx, d.preview);   // 型に依存しない汎用ディスパッチ
   ctx.globalAlpha = 1;
+}
+
+/** 作図中の折れ線: 確定済みの区間＋カーソルまでの仮の1区間＋頂点マーカーを描く */
+function drawPolylineInProgress(){
+  const p = ui.poly;
+  if(!p) return;
+  const z = cam().zoom;
+  const preview = makePolyline(p.pts);   // 確定済み区間は実物と同じスタイルで見せる
+  ctx.save();
+  ctx.globalAlpha = .85;
+  if(p.pts.length >= 4) def(preview).draw(ctx, preview);
+  // カーソルまでの仮区間は破線にして「まだ確定していない」ことを示す
+  const n = p.pts.length;
+  const st = applyStrokeStyle(ctx, preview);
+  ctx.setLineDash([6/z, 4/z]);
+  ctx.globalAlpha = .55;
+  ctx.beginPath();
+  ctx.moveTo(p.pts[n-2], p.pts[n-1]);
+  ctx.lineTo(p.cursor.x, p.cursor.y);
+  ctx.stroke();
+  // 頂点マーカー（スクリーン上で一定サイズに見えるよう半径をズームで割る）
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+  const r = 3/z;
+  ctx.fillStyle = st.stroke;
+  for(let i=0;i<n;i+=2){ ctx.beginPath(); ctx.arc(p.pts[i], p.pts[i+1], r, 0, Math.PI*2); ctx.fill(); }
+  ctx.restore();
 }
 
 function drawHover(){
@@ -1364,6 +1458,7 @@ const ICON = {
   candle:'<path d="M9 2v3M9 13v3"/><rect x="6" y="5" width="6" height="8" rx="1"/>',
   pen:   '<path d="M3 15l1-3.4L11.6 4a1.6 1.6 0 012.3 2.3L6.4 14z"/>',
   line:  '<path d="M3 14L15 4"/>',
+  polyline:'<path d="M2 13l4-5 3.5 3L15 4"/><circle cx="2" cy="13" r="1.3"/><circle cx="6" cy="8" r="1.3"/><circle cx="9.5" cy="11" r="1.3"/><circle cx="15" cy="4" r="1.3"/>',
   arrow: '<path d="M3 14L15 4M15 4h-4.6M15 4v4.6"/>',
   hline: '<path d="M2 9h14M5 6.5v5M13 6.5v5"/>',
   rect:  '<rect x="3" y="4.5" width="12" height="9" rx="1"/>',
@@ -1379,6 +1474,7 @@ const TOOLS = [
   { div:true },
   { id:'pen',    key:'P', label:'ペン' },
   { id:'line',   key:'L', label:'直線' },
+  { id:'polyline', key:'G', label:'折れ線' },
   { id:'arrow',  key:'A', label:'矢印' },
   { id:'hline',  key:'⇧L',label:'水平ライン' },
   { id:'rect',   key:'R', label:'矩形ゾーン' },
@@ -1402,11 +1498,13 @@ function buildToolbar(){
   }
 }
 function setTool(id){
+  // 折れ線の作図中に別ツールへ移るときは、描きかけを捨てずに確定させる
+  if(ui.poly && id !== 'polyline') commitPolyline();
   ui.tool = id;
   if(id !== 'select') ui.selection.clear();
   syncUI(); requestRender(); updateCursor();
 }
-const CREATE_TOOLS = new Set(['candle','pen','line','arrow','hline','rect','text','note','fib']);
+const CREATE_TOOLS = new Set(['candle','pen','line','polyline','arrow','hline','rect','text','note','fib']);
 /** ハンドルの形状ごとに適切なリサイズカーソルを返す（7.3）。
  *  candle の O/H/L/C・hline の p は価格（Y）方向にしか動かないので ns-resize。
  *  rect の四隅は対角方向なので nwse-resize / nesw-resize を使い分ける。
@@ -1419,7 +1517,7 @@ function handleCursor(s, id){
       return 'ns-resize';
     case 'rect':
       return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
-    case 'line': case 'arrow': case 'fib':
+    case 'line': case 'arrow': case 'fib': case 'polyline':
       return 'move';
     default:
       return 'ns-resize';
@@ -1495,6 +1593,23 @@ cv.addEventListener('pointerdown', e=>{
       },
     };
     ui.drag.onMove(wp, e);
+    requestRender(); return;
+  }
+
+  // --- 折れ線: クリックで頂点を継ぎ足す（ui.drag ではなく ui.poly でクリックをまたいで保持） ---
+  if(ui.tool==='polyline'){
+    const pt = polylineInputPoint(wp, e);
+    if(!ui.poly){
+      ui.selection.clear();
+      ui.poly = { pts:[pt.x, pt.y], cursor:{...pt} };
+    } else {
+      // 直前の頂点とほぼ同じ位置なら「打ち止め」の意思表示とみなして確定する。
+      // ダブルクリックでの終了も、2回目のクリックがこの条件に合致することで自然に処理される。
+      const n = ui.poly.pts.length;
+      if(Math.hypot(pt.x - ui.poly.pts[n-2], pt.y - ui.poly.pts[n-1]) <= tolW(6)){ finishPolyline(); return; }
+      ui.poly.pts.push(pt.x, pt.y);
+      ui.poly.cursor = {...pt};
+    }
     requestRender(); return;
   }
 
@@ -1642,6 +1757,13 @@ cv.addEventListener('pointermove', e=>{
   ui.mouseWorld = wp;
   const d = ui.drag;
 
+  // 折れ線の作図中: 次の頂点へのプレビュー線をカーソルに追従させる。
+  // !d の条件は、作図の途中で右ドラッグしてパンする操作を邪魔しないため。
+  if(ui.poly && !d){
+    ui.poly.cursor = polylineInputPoint(wp, e);
+    requestRender(); return;
+  }
+
   if(!d){
     // ホバー判定
     const hh = hitHandle(sp);
@@ -1693,6 +1815,40 @@ cv.addEventListener('pointermove', e=>{
     requestRender(); syncUI(); return;
   }
 });
+
+/* ---- 折れ線の作図 ---- */
+/** 折れ線の入力点を求める。Shift 押下時は直前の頂点から45度刻みに拘束する */
+function polylineInputPoint(wp, ev){
+  let x = snapV(wp.x,'x'), y = snapV(wp.y,'y');
+  if(ev && ev.shiftKey && ui.poly && ui.poly.pts.length >= 2){
+    const n = ui.poly.pts.length;
+    const sn = snapAngle45(ui.poly.pts[n-2], ui.poly.pts[n-1], x, y);
+    x = sn.x2; y = sn.y2;
+  }
+  return { x, y };
+}
+/** 作図中の折れ線をオブジェクト化する（ツール切替はしない）。頂点が2つ未満なら破棄する。
+ *  setTool から呼ぶ経路があるので、ここで setTool を呼ばないことで相互再帰を避けている。 */
+function commitPolyline(){
+  const p = ui.poly;
+  ui.poly = null;
+  if(!p || p.pts.length < 4){ requestRender(); return false; }
+  const s = makePolyline(p.pts);
+  act(()=>{ board.objects.push(s); });
+  ui.selection = new Set([s.id]);
+  return true;
+}
+/** 折れ線を確定して選択ツールへ戻る（他の作成ツールと同じ挙動） */
+function finishPolyline(){
+  commitPolyline();
+  setTool('select');
+}
+/** 作図中の折れ線を破棄する（ボード切替など、確定させたくない場面用） */
+function cancelPolyline(){
+  if(!ui.poly) return;
+  ui.poly = null;
+  requestRender();
+}
 
 function endDrag(){
   const d = ui.drag;
@@ -1790,7 +1946,7 @@ window.addEventListener('keydown', e=>{
   if(!mod){
     if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
     if(!e.shiftKey){
-      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
+      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
       const t = map[k.toLowerCase()];
       if(t){ setTool(t); return; }
     }
@@ -1818,9 +1974,15 @@ window.addEventListener('keydown', e=>{
     act(()=>{ board.objects = board.objects.filter(o=>!ui.selection.has(o.id)); ui.selection.clear(); });
     return;
   }
-  if(k==='Enter'){ e.preventDefault(); duplicateBeside(e.shiftKey ? -1 : 1); return; }
+  if(k==='Enter'){
+    e.preventDefault();
+    if(ui.poly){ finishPolyline(); return; }   // 折れ線の作図中は Enter で打ち止め
+    duplicateBeside(e.shiftKey ? -1 : 1); return;
+  }
   if(k==='Escape'){
     if(!$('help').hidden){ $('help').hidden=true; return; }
+    // 折れ線の作図中: 描きかけを破棄する（確定は Enter / 最後の頂点をクリック）
+    if(ui.poly){ cancelPolyline(); setTool('select'); return; }
     ui.selection.clear(); setTool('select'); return;
   }
   if(k.startsWith('Arrow')){
@@ -1961,6 +2123,7 @@ function color(label, value, onChange){
 const INSPECTORS = {
   candle: buildCandleInspector,
   line: buildLineInspector,
+  polyline: buildPolylineInspector,
   arrow: buildArrowInspector,
   rect: buildRectInspector,
   hline: buildHLineInspector,
@@ -2133,6 +2296,25 @@ function buildHLineInspector(ins, s){
   sec.appendChild(num('価格', s.y, v=>act(()=>{ s.y = v; })));
   ins.appendChild(sec);
   buildStyleSection(ins, s);
+}
+
+function buildPolylineInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='折れ線';
+  sec.appendChild(h);
+  const info = document.createElement('div'); info.className='hintline';
+  info.innerHTML = `頂点 <b>${polyCount(s)}</b> 個`;
+  sec.appendChild(info);
+  ins.appendChild(sec);
+  buildStyleSection(ins, s);
+
+  const sec2 = document.createElement('div'); sec2.className='ins-sec';
+  const h2 = document.createElement('div'); h2.className='ins-h'; h2.textContent='操作';
+  sec2.appendChild(h2);
+  const hint = document.createElement('div'); hint.className='hintline';
+  hint.innerHTML = '各頂点のハンドルをドラッグで編集<br>Shift で 45 度刻みに拘束';
+  sec2.appendChild(hint);
+  ins.appendChild(sec2);
 }
 
 function buildPenInspector(ins, s){
@@ -2545,6 +2727,7 @@ function flushSave(){
 /** 現在の描画/選択/編集状態をリセットする（ボード切替系の操作すべてで共通） */
 function resetInteractionState(){
   finalizeEditing();
+  ui.poly = null;   // 描きかけの折れ線を別のボードへ持ち越さない
   ui.drag = null;
   ui.selection = new Set();
   ui.hoverId = null; ui.hoverHandle = null;
