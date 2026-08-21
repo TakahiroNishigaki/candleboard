@@ -1890,7 +1890,13 @@ function color(label, value, onChange){
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent=label;
   const i = document.createElement('input'); i.type='color'; i.value=value;
-  i.oninput = ()=>onChange(i.value);
+  // ネイティブの色ピッカーはドラッグ中 'input' を連続発火する。ここで act() のように
+  // インスペクタを毎回作り直すと、操作中の <input> 自体がDOMから消えてピッカーが即座に
+  // 閉じてしまう。'input' 中は値の適用と再描画のみ行い、'change'（ピッカーの確定/close 時）
+  // になって初めて Undo 履歴へ1回だけコミットしてインスペクタを再構築する
+  // （beginAction は同一ジェスチャー内で何度呼んでも最初の1回しかスナップショットを取らない）。
+  i.oninput = ()=>{ beginAction(); onChange(i.value); requestRender(); };
+  i.onchange = ()=>{ onChange(i.value); commitAction(); requestRender(); syncUI(); };
   row.append(l,i); return row;
 }
 
@@ -1973,7 +1979,7 @@ function buildStyleSection(ins, s){
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='スタイル';
   sec.appendChild(h);
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('線色', st.stroke, v=>act(()=>{ st.stroke=v; })));
+  sec.appendChild(color('線色', st.stroke, v=>{ st.stroke=v; }));
   sec.appendChild(num('線幅', st.width, v=>act(()=>{ st.width=clamp(v,1,20); }), 0.5));
 
   const opRow = document.createElement('div'); opRow.className='row';
@@ -2001,9 +2007,9 @@ function buildMultiStyleSection(ins, sel){
   const first = styleOf(styled[0]);
   const ensureStyle = s => { s.style = s.style || {...DEFAULT_STYLE}; return s.style; };
 
-  sec.appendChild(color('線色', first.stroke, v=>act(()=>{
+  sec.appendChild(color('線色', first.stroke, v=>{
     styled.forEach(s=>{ ensureStyle(s).stroke = v; });
-  })));
+  }));
   sec.appendChild(num('線幅', first.width, v=>act(()=>{
     const cv = clamp(v,1,20); styled.forEach(s=>{ ensureStyle(s).width = cv; });
   }), 0.5));
@@ -2052,7 +2058,7 @@ function buildRectInspector(ins, s){
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='矩形ゾーン';
   sec.appendChild(h);
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('塗り色', st.fill, v=>act(()=>{ st.fill=v; })));
+  sec.appendChild(color('塗り色', st.fill, v=>{ st.fill=v; }));
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent='塗り不透明度';
   const i = document.createElement('input'); i.type='number'; i.min=0; i.max=1; i.step=0.05; i.value=st.fillOpacity;
@@ -2085,7 +2091,7 @@ function buildTextInspector(ins, s){
   sec.appendChild(h);
   sec.appendChild(num('フォントサイズ', s.fontSize||16, v=>act(()=>{ s.fontSize=clamp(v,8,120); }), 1));
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('文字色', st.stroke, v=>act(()=>{ st.stroke=v; })));
+  sec.appendChild(color('文字色', st.stroke, v=>{ st.stroke=v; }));
 
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent='揃え';
