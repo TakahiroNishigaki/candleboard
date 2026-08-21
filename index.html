@@ -387,6 +387,7 @@ const ui = {
   mouseWorld: {x:0,y:0},
   clipboard: [],
   editing: null,       // { id, div } — text/note の contenteditable 編集中はここに入る
+  lastParams: {},      // 型ごとの「直近に編集されたスタイル的パラメータ」。新規作成時の初期値に使う
 };
 
 /* ==========================================================================
@@ -420,6 +421,8 @@ function commitAction(){
   if(history.undo.length > history.limit) history.undo.shift();
   history.redo.length = 0;
   touch();
+  // 選択中オブジェクトが確定編集された＝次回の新規作成に引き継ぐパラメータとして記憶する
+  rememberFromSelection();
 }
 function cancelAction(){ pendingUndo = null; }
 /** 単発の変更用: beginAction + 変更 + commitAction をまとめる */
@@ -555,6 +558,46 @@ Shapes.candle = {
    ========================================================================== */
 const DEFAULT_STYLE = { stroke:'#4c8dff', width:2, opacity:1, dash:false, fill:'#4c8dff', fillOpacity:.15 };
 const styleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
+
+/** 型ごとに「直近に編集されたスタイル的パラメータ」を引き継ぐ仕組み。
+ *  位置・サイズなどのジオメトリは対象外（ドラッグのたびにユーザーが指定するため）。
+ *  candle は既存の board.settings（グリッド幅と同様の板全体設定）で見た目を管理しているため対象外。 */
+const CARRY_PARAMS = {
+  line:  ['style'],
+  arrow: ['style','head'],
+  rect:  ['style'],
+  hline: ['style'],
+  pen:   ['style'],
+  text:  ['style','fontSize','align'],
+  fib:   ['style','levels','extend','showPrice'],
+  note:  ['bg'],
+};
+/** 1オブジェクト分を記憶する。記憶したら true を返す（呼び出し側が1回だけ保存できるように） */
+function rememberLastParams(s){
+  const fields = CARRY_PARAMS[s.type];
+  if(!fields) return false;
+  const snap = {};
+  for(const f of fields) if(s[f] !== undefined) snap[f] = clone(s[f]);
+  ui.lastParams[s.type] = snap;
+  return true;
+}
+/** 選択中オブジェクトのパラメータを記憶して永続化する。
+ *  「スタイルを記憶する」ことと「Undo履歴へコミットする」ことは別の関心事なので、
+ *  commitAction() だけでなく色ピッカーのライブ編集（input）からも直接呼ぶ。
+ *  commitAction() 任せにすると、change が発火しないピッカー操作で
+ *  「画面の色は変わったのに次のオブジェクトへ引き継がれない」状態になる。
+ *  DOM は一切触らないのでピッカーを開いたまま何度呼んでも安全。 */
+function rememberFromSelection(){
+  let remembered = false;
+  for(const s of selected()) remembered = rememberLastParams(s) || remembered;
+  if(remembered) saveLastParams();   // localStorage 書き込みは同期的なので選択数によらず最後に1回
+}
+/** 各 makeXxx() から呼ぶ: 記憶済みパラメータがあれば新規オブジェクトへ上書き適用する */
+function withLastParams(type, obj){
+  const p = ui.lastParams[type];
+  if(p) Object.assign(obj, clone(p));
+  return obj;
+}
 /** ストローク系の共通設定を適用して返す。呼び出し側は必ず ctx.save()/restore() で囲むこと */
 function applyStrokeStyle(ctx, s){
   const st = styleOf(s);
@@ -637,7 +680,7 @@ function noteTextColor(bg){
 }
 
 /* ---------- Line ---------- */
-function makeLine(x1,y1,x2,y2){ return { id:uid(), type:'line', x1,y1,x2,y2, style:{...DEFAULT_STYLE} }; }
+function makeLine(x1,y1,x2,y2){ return withLastParams('line', { id:uid(), type:'line', x1,y1,x2,y2, style:{...DEFAULT_STYLE} }); }
 Shapes.line = {
   bbox(s){
     const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2), y0=Math.min(s.y1,s.y2), y1=Math.max(s.y1,s.y2);
@@ -665,7 +708,7 @@ Shapes.line = {
 };
 
 /* ---------- Arrow（line と大半を共有） ---------- */
-function makeArrow(x1,y1,x2,y2){ return { id:uid(), type:'arrow', x1,y1,x2,y2, head:'end', style:{...DEFAULT_STYLE} }; }
+function makeArrow(x1,y1,x2,y2){ return withLastParams('arrow', { id:uid(), type:'arrow', x1,y1,x2,y2, head:'end', style:{...DEFAULT_STYLE} }); }
 Shapes.arrow = {
   bbox(s){
     const x0=Math.min(s.x1,s.x2), x1=Math.max(s.x1,s.x2), y0=Math.min(s.y1,s.y2), y1=Math.max(s.y1,s.y2);
@@ -698,7 +741,7 @@ Shapes.arrow = {
 };
 
 /* ---------- 水平ライン（価格空間を使う。y フィールドの中身は「価格」） ---------- */
-function makeHLine(price){ return { id:uid(), type:'hline', y:price, style:{...DEFAULT_STYLE} }; }
+function makeHLine(price){ return withLastParams('hline', { id:uid(), type:'hline', y:price, style:{...DEFAULT_STYLE} }); }
 Shapes.hline = {
   bbox(s){ const c=cam(); return { x:c.x, y:PY(s.y), w:(W||1000)/c.zoom, h:0 }; },
   draw(ctx, s){
@@ -715,7 +758,7 @@ Shapes.hline = {
 };
 
 /* ---------- 矩形ゾーン ---------- */
-function makeRect(x,y,w,h){ return { id:uid(), type:'rect', x,y,w,h, style:{...DEFAULT_STYLE} }; }
+function makeRect(x,y,w,h){ return withLastParams('rect', { id:uid(), type:'rect', x,y,w,h, style:{...DEFAULT_STYLE} }); }
 Shapes.rect = {
   bbox(s){ const pad=Math.max(4, styleOf(s).width); return {x:s.x-pad,y:s.y-pad,w:s.w+pad*2,h:s.h+pad*2}; },
   draw(ctx, s){
@@ -757,7 +800,7 @@ Shapes.rect = {
 };
 
 /* ---------- ペン（フリーハンド。原点 x,y + 相対点列 pts） ---------- */
-function makePen(x,y,pts){ return { id:uid(), type:'pen', x, y, pts:pts.slice(), bb:penBBox(pts), style:{...DEFAULT_STYLE} }; }
+function makePen(x,y,pts){ return withLastParams('pen', { id:uid(), type:'pen', x, y, pts:pts.slice(), bb:penBBox(pts), style:{...DEFAULT_STYLE} }); }
 /** ペンストロークの Path2D キャッシュ（7.2）。
  *  pts 配列そのものをキーにした WeakMap で持つ: ペンの点列は作成後に一切書き換わらない
  *  （handles を持たず、move() は s.x/s.y のオフセットを動かすだけ）ため、
@@ -805,7 +848,7 @@ Shapes.pen = {
 };
 
 /* ---------- テキスト ---------- */
-function makeText(x,y){ return { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', style:{...DEFAULT_STYLE} }; }
+function makeText(x,y){ return withLastParams('text', { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', style:{...DEFAULT_STYLE} }); }
 Shapes.text = {
   bbox(s){
     const lines = (s.text||'').split('\n');
@@ -836,7 +879,7 @@ Shapes.text = {
 };
 
 /* ---------- 付箋 ---------- */
-function makeNote(x,y,w,h){ return { id:uid(), type:'note', x, y, w, h, text:'', bg:NOTE_COLORS[0] }; }
+function makeNote(x,y,w,h){ return withLastParams('note', { id:uid(), type:'note', x, y, w, h, text:'', bg:NOTE_COLORS[0] }); }
 Shapes.note = {
   bbox(s){ return { x:s.x, y:s.y, w:s.w, h:s.h }; },
   draw(ctx, s){
@@ -871,7 +914,7 @@ Shapes.note = {
 const FIB_STANDARD_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const FIB_EXTEND_LEVELS = [1.272, 1.618];
 function makeFib(x1,y1,x2,y2){
-  return { id:uid(), type:'fib', x1,y1,x2,y2, levels:FIB_STANDARD_LEVELS.slice(), extend:false, showPrice:true, style:{...DEFAULT_STYLE} };
+  return withLastParams('fib', { id:uid(), type:'fib', x1,y1,x2,y2, levels:FIB_STANDARD_LEVELS.slice(), extend:false, showPrice:true, style:{...DEFAULT_STYLE} });
 }
 /** 表示対象レベル一覧（拡張ON時は 1.272/1.618 も加え、重複排除してソート） */
 function fibLevels(s){
@@ -1890,13 +1933,28 @@ function color(label, value, onChange){
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent=label;
   const i = document.createElement('input'); i.type='color'; i.value=value;
-  // ネイティブの色ピッカーはドラッグ中 'input' を連続発火する。ここで act() のように
-  // インスペクタを毎回作り直すと、操作中の <input> 自体がDOMから消えてピッカーが即座に
-  // 閉じてしまう。'input' 中は値の適用と再描画のみ行い、'change'（ピッカーの確定/close 時）
-  // になって初めて Undo 履歴へ1回だけコミットしてインスペクタを再構築する
-  // （beginAction は同一ジェスチャー内で何度呼んでも最初の1回しかスナップショットを取らない）。
-  i.oninput = ()=>{ beginAction(); onChange(i.value); requestRender(); };
-  i.onchange = ()=>{ onChange(i.value); commitAction(); requestRender(); syncUI(); };
+  // ネイティブの色ピッカーはドラッグ中 'input' を連続発火し、'change' はピッカーを閉じた時に来る。
+  // ここで act() のようにインスペクタを毎回作り直すと、操作中の <input> 自体がDOMから消えて
+  // ピッカーが即座に閉じてしまうため、DOM を作り直す syncUI() は 'change' まで遅らせる。
+  //
+  // ただし「値の反映・スタイルの記憶・保存」は 'change' に依存させてはいけない。
+  // 環境によって片方のイベントしか発火しないことがあり、実際に次の2つの不具合を起こしていた:
+  //   - 'input' が来ず 'change' だけ  -> pendingUndo が null で commitAction() が素通りし、色が保存されない
+  //   - 'change' が来ず 'input' だけ  -> 画面の色は変わるのに記憶されず、次のオブジェクトへ引き継がれない
+  // そのため両ハンドラで beginAction() を呼び、'input' 側でも記憶と保存まで済ませておく
+  // （beginAction は同一ジェスチャー内で何度呼んでも最初の1回しかスナップショットを取らない。
+  //   rememberFromSelection()/touch() は DOM を触らないのでピッカーは開いたまま）。
+  i.oninput = ()=>{
+    beginAction(); onChange(i.value);
+    rememberFromSelection(); touch();
+    requestRender();
+  };
+  i.onchange = ()=>{
+    beginAction(); onChange(i.value);
+    commitAction(); requestRender(); syncUI();
+  };
+  // 'change' が来ないまま入力欄を離れた場合の保険（保留中の変更を確実に Undo 履歴へ確定させる）
+  i.onblur = ()=>{ if(pendingUndo !== null){ commitAction(); requestRender(); syncUI(); } };
   row.append(l,i); return row;
 }
 
@@ -2305,6 +2363,31 @@ function zoomAtCenter(f){
 const DB_NAME = 'candleboard', DB_VERSION = 1, STORE_NAME = 'boards';
 const LAST_BOARD_KEY = 'candleboard.lastBoardId';   // localStorage: 最後に開いたボードの id のみ保存
 const LEGACY_KEY = 'candleboard.temp.v1';           // Phase 1-5 の暫定 localStorage 保存キー（移行後に削除）
+const LAST_PARAMS_KEY = 'candleboard.lastParams';   // localStorage: 型ごとの直近スタイル（ボード内容ではなくツールの設定なのでDBには入れない）
+
+/* ---- 直近スタイルの永続化（ui.lastParams / §4x の CARRY_PARAMS と対になる） ---- */
+/** ui.lastParams を localStorage へ保存する。ボードをまたいで共通のツール設定として扱う */
+function saveLastParams(){
+  try{ localStorage.setItem(LAST_PARAMS_KEY, JSON.stringify(ui.lastParams)); }catch(_){}
+}
+/** 起動時に呼ぶ。壊れた値や既知でない型・フィールドは捨てて取り込む（CARRY_PARAMS を将来変えても安全） */
+function loadLastParams(){
+  let raw;
+  try{ raw = localStorage.getItem(LAST_PARAMS_KEY); }catch(_){ return; }
+  if(!raw) return;
+  let data;
+  try{ data = JSON.parse(raw); }catch(_){ return; }
+  if(!data || typeof data !== 'object') return;
+  const out = {};
+  for(const [type, fields] of Object.entries(CARRY_PARAMS)){
+    const src = data[type];
+    if(!src || typeof src !== 'object') continue;
+    const snap = {};
+    for(const f of fields) if(src[f] !== undefined) snap[f] = clone(src[f]);
+    if(Object.keys(snap).length) out[type] = snap;
+  }
+  ui.lastParams = out;
+}
 
 let dbPromise = null;
 function openDB(){
@@ -2818,6 +2901,7 @@ function seedDemo(){
 
 async function boot(){
   buildToolbar();
+  loadLastParams();   // 前回セッションで使ったスタイルを復元してから最初の描画に備える
   setSaveState('saved');
   let loaded = null;
   try{ loaded = await loadInitialBoard(); }
