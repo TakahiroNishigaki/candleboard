@@ -563,7 +563,7 @@ Shapes.candle = {
 /* ==========================================================================
    4x. 共通描画スタイル / 幾何ヘルパ（Phase 4 の描画ツールが共有する）
    ========================================================================== */
-const DEFAULT_STYLE = { stroke:'#4c8dff', width:2, opacity:1, dash:false, fill:'#4c8dff', fillOpacity:.15 };
+const DEFAULT_STYLE = { stroke:'#4c8dff', width:1, opacity:1, dash:false, fill:'#4c8dff', fillOpacity:.15 };
 const styleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
 
 /** 型ごとに「直近に編集されたスタイル的パラメータ」を引き継ぐ仕組み。
@@ -606,12 +606,16 @@ function withLastParams(type, obj){
   if(p) Object.assign(obj, clone(p));
   return obj;
 }
+/** 線幅の下限（ワールド単位）。実画面で最低1デバイスピクセルは残して線が消えないようにする。
+ *  lineWidth はワールド単位なので、実際の太さは width*zoom*dpr デバイスピクセルになる。
+ *  ここを 1/zoom（＝1 CSSピクセル）にしてしまうと、高DPI画面で 0.5 と 1 が同じ太さに潰れる。 */
+const minStrokeW = () => 1/(cam().zoom*dpr);
 /** ストローク系の共通設定を適用して返す。呼び出し側は必ず ctx.save()/restore() で囲むこと */
 function applyStrokeStyle(ctx, s){
   const st = styleOf(s);
   ctx.strokeStyle = st.stroke;
   ctx.globalAlpha = st.opacity;
-  ctx.lineWidth = Math.max(st.width, 1/cam().zoom);
+  ctx.lineWidth = Math.max(st.width, minStrokeW());
   ctx.setLineDash(st.dash ? [6/cam().zoom, 4/cam().zoom] : []);
   return st;
 }
@@ -835,7 +839,7 @@ Shapes.rect = {
     ctx.fillRect(s.x, s.y, s.w, s.h);
     ctx.globalAlpha = st.opacity;
     ctx.strokeStyle = st.stroke;
-    ctx.lineWidth = Math.max(st.width, 1/cam().zoom);
+    ctx.lineWidth = Math.max(st.width, minStrokeW());
     ctx.setLineDash(st.dash ? [6/cam().zoom,4/cam().zoom] : []);
     ctx.strokeRect(s.x, s.y, s.w, s.h);
     ctx.restore();
@@ -1014,7 +1018,7 @@ Shapes.fib = {
       const edge = (t===0 || t===1);
       ctx.strokeStyle = st.stroke;
       ctx.globalAlpha = edge ? st.opacity : st.opacity*0.7;
-      ctx.lineWidth = Math.max(edge ? st.width+0.75 : st.width, 1/cam().zoom);
+      ctx.lineWidth = Math.max(edge ? st.width+0.75 : st.width, minStrokeW());
       ctx.setLineDash(st.dash ? [6/cam().zoom,4/cam().zoom] : []);
       ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
     }
@@ -2201,7 +2205,7 @@ function buildStyleSection(ins, s){
   sec.appendChild(h);
   const st = s.style = s.style || {...DEFAULT_STYLE};
   sec.appendChild(color('線色', st.stroke, v=>{ st.stroke=v; }));
-  sec.appendChild(num('線幅', st.width, v=>act(()=>{ st.width=clamp(v,1,20); }), 0.5));
+  sec.appendChild(num('線幅', st.width, v=>act(()=>{ st.width=clamp(v,0.5,20); }), 0.5));
 
   const opRow = document.createElement('div'); opRow.className='row';
   const opL = document.createElement('label'); opL.textContent='不透明度';
@@ -2232,7 +2236,7 @@ function buildMultiStyleSection(ins, sel){
     styled.forEach(s=>{ ensureStyle(s).stroke = v; });
   }));
   sec.appendChild(num('線幅', first.width, v=>act(()=>{
-    const cv = clamp(v,1,20); styled.forEach(s=>{ ensureStyle(s).width = cv; });
+    const cv = clamp(v,0.5,20); styled.forEach(s=>{ ensureStyle(s).width = cv; });
   }), 0.5));
 
   const opRow = document.createElement('div'); opRow.className='row';
