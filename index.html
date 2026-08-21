@@ -461,6 +461,7 @@ function pruneSelection(){
      draw(ctx,s)              -> ワールド座標系のまま描画（transform 適用済み）
      hit(s, wpt, tol)         -> boolean
      move(s, dx, dy)          -> ワールド差分で移動
+     anchor(s)                -> {x,y}  移動スナップでグリッド線に合わせる基準点
      handles(s)               -> [{id,x,y}]  ワールド座標（選択中のみ表示）
      dragHandle(s, id, wpt)   -> ハンドルドラッグ処理
    ========================================================================== */
@@ -541,6 +542,7 @@ Shapes.candle = {
     const dp = -dy;                 // worldY 差分 -> 価格差分
     k.o += dp; k.h += dp; k.l += dp; k.c += dp;
   },
+  anchor: k => ({ x:k.x, y:PY(k.h) }),
   handles(k){
     const half = cw(k)/2;
     return [
@@ -707,6 +709,7 @@ Shapes.line = {
   },
   hit(s, p, tol){ return distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol; },
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  anchor: s => ({ x:s.x1, y:s.y1 }),
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p, ev){
     let x=snapV(p.x,'x'), y=snapV(p.y,'y');
@@ -740,6 +743,7 @@ Shapes.arrow = {
   },
   hit: (s,p,tol) => distToSegment(p.x,p.y, s.x1,s.y1,s.x2,s.y2) <= tol,
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  anchor: s => ({ x:s.x1, y:s.y1 }),
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p, ev){
     let x=snapV(p.x,'x'), y=snapV(p.y,'y');
@@ -790,6 +794,7 @@ Shapes.polyline = {
   move(s, dx, dy){
     for(let i=0;i<s.pts.length;i+=2){ s.pts[i]+=dx; s.pts[i+1]+=dy; }
   },
+  anchor: s => ({ x:s.pts[0], y:s.pts[1] }),
   // ハンドルIDは 'p0','p1'… の2文字以上にしておく（drawSelection が1文字IDだけラベルを描くため）
   handles(s){
     const out = [];
@@ -823,6 +828,8 @@ Shapes.hline = {
   },
   hit(s, p, tol){ return Math.abs(p.y - PY(s.y)) <= tol; },
   move(s, dx, dy){ s.y += -dy; },   // dy はワールドY差分 -> 価格差分は符号反転（PY/YPと同じ規則）
+  // X はビューポート全幅に伸びる形状なので意味を持たない。Y（価格）だけがグリッド基準になる
+  anchor: s => ({ x:0, y:PY(s.y) }),
   handles(s){ const c=cam(); return [ { id:'p', x:c.x+(W/c.zoom)/2, y:PY(s.y) } ]; },
   dragHandle(s, id, p){ s.y = snapV(YP(p.y), 'y'); },
 };
@@ -846,6 +853,7 @@ Shapes.rect = {
   },
   hit(s, p, tol){ return p.x>=s.x-tol && p.x<=s.x+s.w+tol && p.y>=s.y-tol && p.y<=s.y+s.h+tol; },
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  anchor: s => ({ x:s.x, y:s.y }),
   handles(s){
     const {x,y,w,h}=s;
     return [ {id:'nw',x,y},{id:'n',x:x+w/2,y},{id:'ne',x:x+w,y},{id:'e',x:x+w,y:y+h/2},
@@ -914,6 +922,7 @@ Shapes.pen = {
     return pts.length>=2 && Math.hypot(lx-pts[0], ly-pts[1]) <= tol;
   },
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  anchor: s => ({ x:s.x, y:s.y }),
   // handles なし（フリーハンドのため部分編集はサポートしない。全体移動のみ）
 };
 
@@ -946,6 +955,7 @@ Shapes.text = {
   },
   hit(s, p, tol){ const b=Shapes.text.bbox(s); return p.x>=b.x-tol && p.x<=b.x+b.w+tol && p.y>=b.y-tol && p.y<=b.y+b.h+tol; },
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  anchor: s => ({ x:s.x, y:s.y }),
 };
 
 /* ---------- 付箋 ---------- */
@@ -968,6 +978,7 @@ Shapes.note = {
   },
   hit(s, p, tol){ return p.x>=s.x-tol && p.x<=s.x+s.w+tol && p.y>=s.y-tol && p.y<=s.y+s.h+tol; },
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  anchor: s => ({ x:s.x, y:s.y }),
   handles(s){ const {x,y,w,h}=s; return [ {id:'nw',x,y},{id:'ne',x:x+w,y},{id:'se',x:x+w,y:y+h},{id:'sw',x,y:y+h} ]; },
   dragHandle(s, id, p){
     const x2=snapV(p.x,'x'), y2=snapV(p.y,'y');
@@ -1037,6 +1048,7 @@ Shapes.fib = {
     return false;
   },
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
+  anchor: s => ({ x:s.x1, y:s.y1 }),
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p, ev){
     let x=snapV(p.x,'x'), y=snapV(p.y,'y');
@@ -1049,6 +1061,16 @@ Shapes.fib = {
 /* 共通ヘルパ（レジストリ経由） */
 const def = s => Shapes[s.type];
 const bboxOf = s => def(s).bbox(s);
+/** 移動スナップでグリッド線に合わせる基準点。
+ *  作成時にスナップされるフィールドと同じ点を返すこと（例: candle は中心X と 高値）。
+ *  bbox は線幅ぶんの padding や candle の実体幅の半分を含んでいて基準にできないため、
+ *  型ごとに明示する。anchor 未定義の型は bbox 左上で代用する。 */
+function anchorOf(s){
+  const f = def(s).anchor;
+  if(f) return f(s);
+  const b = bboxOf(s);
+  return { x:b.x, y:b.y };
+}
 function unionBBox(list){
   if(!list.length) return null;
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
@@ -1744,6 +1766,7 @@ cv.addEventListener('pointerdown', e=>{
       }
       ui.drag = {
         mode:'move', startW:wp,
+        anchor: anchorOf(hit),   // 掴んだオブジェクトの移動前の基準点（スナップの土台にする）
         orig: new Map(selected().map(s=>[s.id, clone(s)])),
       };
       syncUI(); requestRender(); return;
@@ -1797,9 +1820,14 @@ cv.addEventListener('pointermove', e=>{
   }
   if(d.mode==='move'){
     let dx = wp.x - d.startW.x, dy = wp.y - d.startW.y;
-    const g = board.settings.grid;
-    if(snapOn('x')) dx = Math.round(dx/g)*g;
-    if(snapOn('y')) dy = Math.round(dy/g)*g;
+    // 「移動量」ではなく「移動後の位置」をグリッドに合わせる。
+    // 移動量だけを丸めると、グリッド外にあるオブジェクトはズレを保ったまま
+    // グリッド幅ぶんだけ動く（スナップしているように見えて実際は乗らない）。
+    // 基準点は掴んだオブジェクトのもので、複数選択時も同じ差分を全員に適用して相対位置を保つ。
+    if(d.anchor){
+      if(snapOn('x')) dx = snapV(d.anchor.x + dx, 'x') - d.anchor.x;
+      if(snapOn('y')) dy = snapV(d.anchor.y + dy, 'y') - d.anchor.y;
+    }
     for(const [id, orig] of d.orig){
       const s = byId(id); if(!s) continue;
       Object.assign(s, clone(orig));
