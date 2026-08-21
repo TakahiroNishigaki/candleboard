@@ -217,8 +217,9 @@ body{
     <button class="tb-btn" id="btnBoards" title="ボード一覧">☰</button>
     <input id="boardName" value="無題のボード" spellcheck="false">
     <div class="sep"></div>
-    <button class="tb-btn on" id="btnSnap" title="グリッドスナップ (Alt で一時解除)">グリッド</button>
-    <span class="tb-label">幅 <span class="tb-val" id="lblGrid">20</span></span>
+    <span class="tb-label">グリッド幅 <span class="tb-val" id="lblGrid">20</span></span>
+    <button class="tb-btn on" id="btnSnapX" title="X方向グリッドスナップ (Alt で一時解除)">X</button>
+    <button class="tb-btn on" id="btnSnapY" title="Y方向グリッドスナップ (Alt で一時解除)">Y</button>
     <div class="sep"></div>
     <button class="tb-btn" id="btnZoomOut">−</button>
     <span class="tb-val" id="lblZoom" style="text-align:center;cursor:pointer" title="クリックで 100% に戻す (Shift+0)">100%</span>
@@ -244,7 +245,7 @@ body{
     <tr><td class="grp" colspan="2">ツール</td></tr>
     <tr><td class="k">V</td><td>選択</td></tr>
     <tr><td class="k">H / Space長押し</td><td>ハンド（パン）</td></tr>
-    <tr><td class="k">K</td><td>ローソク足</td></tr>
+    <tr><td class="k">C</td><td>ローソク足</td></tr>
     <tr><td class="k">P</td><td>ペン（フリーハンド）</td></tr>
     <tr><td class="k">L</td><td>直線</td></tr>
     <tr><td class="k">A</td><td>矢印</td></tr>
@@ -344,6 +345,10 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const PY = p => -p;   // price -> worldY
 const YP = y => -y;   // worldY -> price
 
+/** グリッド幅は固定値。可変にすると「グリッドが変わって前と揃わない＝スナップが効かない」という
+ *  混乱の原因になるため、ユーザーには変更させず全ボード共通の定数として扱う。 */
+const FIXED_GRID = 20;
+
 function newBoard(){
   return {
     id: uid(),
@@ -352,8 +357,9 @@ function newBoard(){
     updatedAt: Date.now(),
     camera: { x:-400, y:-300, zoom:1 },
     settings: {
-      grid: 20,
-      snap: true,
+      grid: FIXED_GRID,
+      snapX: true,
+      snapY: true,
       candleWidth: 12,
       bullColor: '#26a69a',
       bearColor: '#ef5350',
@@ -387,9 +393,10 @@ const cam = () => board.camera;
 function s2w(sx,sy){ const c=cam(); return { x: c.x + sx/c.zoom, y: c.y + sy/c.zoom }; }
 function w2s(wx,wy){ const c=cam(); return { x: (wx-c.x)*c.zoom, y: (wy-c.y)*c.zoom }; }
 
-/** スナップ有効判定: 設定 ON かつ Alt 非押下 */
-const snapOn = () => board.settings.snap !== ui.altHeld;
-function snapV(v){ const g=board.settings.grid; return snapOn() ? Math.round(v/g)*g : v; }
+/** スナップ有効判定: 軸ごとの設定 ON かつ Alt 非押下。axis は 'x' | 'y'（省略時は 'x'）。
+ *  'y' は price 軸（hline の価格・candle の O/H/L/C・fib のレベルもここに含む）を指す。 */
+const snapOn = (axis='x') => board.settings[axis==='y' ? 'snapY' : 'snapX'] !== ui.altHeld;
+function snapV(v, axis='x'){ const g=board.settings.grid; return snapOn(axis) ? Math.round(v/g)*g : v; }
 /** ワールド長さの許容誤差（スクリーン px 指定） */
 const tolW = px => px / cam().zoom;
 
@@ -463,8 +470,8 @@ function makeCandle(x, pHigh, pLow, bullish){
   let o, c;
   if(bullish){ o = l + range*0.30; c = l + range*0.70; }
   else       { o = l + range*0.70; c = l + range*0.30; }
-  o = clamp(snapV(o), l, h);
-  c = clamp(snapV(c), l, h);
+  o = clamp(snapV(o,'y'), l, h);
+  c = clamp(snapV(c,'y'), l, h);
   return normalizeCandle({ id:uid(), type:'candle', x, o, h, l, c });
 }
 
@@ -531,7 +538,7 @@ Shapes.candle = {
     ];
   },
   dragHandle(k, id, p){
-    const price = snapV(YP(p.y));
+    const price = snapV(YP(p.y), 'y');
     if(id === 'H') k.h = Math.max(price, k.o, k.c);
     else if(id === 'L') k.l = Math.min(price, k.o, k.c);
     else if(id === 'O') k.o = price;
@@ -640,7 +647,7 @@ Shapes.line = {
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p){
-    const x=snapV(p.x), y=snapV(p.y);
+    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -668,7 +675,7 @@ Shapes.arrow = {
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p){
-    const x=snapV(p.x), y=snapV(p.y);
+    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -687,7 +694,7 @@ Shapes.hline = {
   hit(s, p, tol){ return Math.abs(p.y - PY(s.y)) <= tol; },
   move(s, dx, dy){ s.y += -dy; },   // dy はワールドY差分 -> 価格差分は符号反転（PY/YPと同じ規則）
   handles(s){ const c=cam(); return [ { id:'p', x:c.x+(W/c.zoom)/2, y:PY(s.y) } ]; },
-  dragHandle(s, id, p){ s.y = snapV(YP(p.y)); },
+  dragHandle(s, id, p){ s.y = snapV(YP(p.y), 'y'); },
 };
 
 /* ---------- 矩形ゾーン ---------- */
@@ -715,7 +722,7 @@ Shapes.rect = {
              {id:'se',x:x+w,y:y+h},{id:'s',x:x+w/2,y:y+h},{id:'sw',x,y:y+h},{id:'w',x,y:y+h/2} ];
   },
   dragHandle(s, id, p){
-    const x2=snapV(p.x), y2=snapV(p.y);
+    const x2=snapV(p.x,'x'), y2=snapV(p.y,'y');
     let {x,y,w,h} = s;
     const right=x+w, bottom=y+h;
     if(id.includes('w')){ const nx=Math.min(x2,right); w=right-nx; x=nx; }
@@ -827,7 +834,7 @@ Shapes.note = {
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
   handles(s){ const {x,y,w,h}=s; return [ {id:'nw',x,y},{id:'ne',x:x+w,y},{id:'se',x:x+w,y:y+h},{id:'sw',x,y:y+h} ]; },
   dragHandle(s, id, p){
-    const x2=snapV(p.x), y2=snapV(p.y);
+    const x2=snapV(p.x,'x'), y2=snapV(p.y,'y');
     let {x,y,w,h}=s; const right=x+w, bottom=y+h;
     if(id.includes('w')){ const nx=Math.min(x2,right); w=right-nx; x=nx; }
     if(id.includes('e')){ const nx=Math.max(x2,x); w=nx-x; }
@@ -896,7 +903,7 @@ Shapes.fib = {
   move(s, dx, dy){ s.x1+=dx; s.y1+=dy; s.x2+=dx; s.y2+=dy; },
   handles(s){ return [ {id:'1',x:s.x1,y:s.y1}, {id:'2',x:s.x2,y:s.y2} ]; },
   dragHandle(s, id, p){
-    const x=snapV(p.x), y=snapV(p.y);
+    const x=snapV(p.x,'x'), y=snapV(p.y,'y');
     if(id==='1'){ s.x1=x; s.y1=y; } else { s.x2=x; s.y2=y; }
   },
 };
@@ -1006,7 +1013,7 @@ function drawEmptyHint(){
   ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-dim').trim() || '#7b848f';
   ctx.font = '600 13px -apple-system,sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('K を押してドラッグ — ローソク足を描けます', W/2, H/2 - 10);
+  ctx.fillText('C を押してドラッグ — ローソク足を描けます', W/2, H/2 - 10);
   ctx.font = '12px -apple-system,sans-serif';
   ctx.fillText('？キーでショートカット一覧', W/2, H/2 + 14);
   ctx.restore();
@@ -1300,7 +1307,7 @@ const TOOLS = [
   { id:'select', key:'V', label:'選択' },
   { id:'hand',   key:'H', label:'ハンド（パン）' },
   { div:true },
-  { id:'candle', key:'K', label:'ローソク足' },
+  { id:'candle', key:'C', label:'ローソク足' },
   { div:true },
   { id:'pen',    key:'P', label:'ペン' },
   { id:'line',   key:'L', label:'直線' },
@@ -1367,6 +1374,7 @@ function localPt(e){ const r=cv.getBoundingClientRect(); return { x:e.clientX-r.
 
 cv.addEventListener('pointerdown', e=>{
   cv.setPointerCapture(e.pointerId);
+  ui.altHeld = e.altKey;   // keyup 取りこぼしで altHeld が固着するのを毎回のポインタ操作で自己修復する
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
   ui.mouseWorld = wp;
 
@@ -1383,11 +1391,11 @@ cv.addEventListener('pointerdown', e=>{
   // --- ローソク作成 ---
   // ui.drag.commit() が確定処理を提供する汎用パターン（Phase 4 の他ツールもこれに倣う）。
   if(ui.tool==='candle'){
-    const x = snapV(wp.x), p = snapV(YP(wp.y));
+    const x = snapV(wp.x,'x'), p = snapV(YP(wp.y),'y');
     ui.drag = {
       mode:'create', tool:'candle', x, p0:p, p1:p, preview:null, sp,
       onMove(wp){
-        this.p1 = snapV(YP(wp.y));
+        this.p1 = snapV(YP(wp.y),'y');
         const bullish = this.p1 >= this.p0;   // 上へドラッグ = 陽線 / 下へ = 陰線
         this.preview = makeCandle(this.x, Math.max(this.p0,this.p1), Math.min(this.p0,this.p1), bullish);
       },
@@ -1402,12 +1410,12 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- 直線 / 矢印 ---
   if(ui.tool==='line' || ui.tool==='arrow'){
-    const x = snapV(wp.x), y = snapV(wp.y);
+    const x = snapV(wp.x,'x'), y = snapV(wp.y,'y');
     const type = ui.tool;
     ui.drag = {
       mode:'create', tool:type, x1:x, y1:y, x2:x, y2:y, preview:null,
       onMove(wp, ev){
-        let x2 = snapV(wp.x), y2 = snapV(wp.y);
+        let x2 = snapV(wp.x,'x'), y2 = snapV(wp.y,'y');
         if(ev && ev.shiftKey){ const sn = snapAngle45(this.x1,this.y1,x2,y2); x2=sn.x2; y2=sn.y2; }
         this.x2 = x2; this.y2 = y2;
         this.preview = type==='line' ? makeLine(this.x1,this.y1,x2,y2) : makeArrow(this.x1,this.y1,x2,y2);
@@ -1424,11 +1432,11 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- 矩形ゾーン ---
   if(ui.tool==='rect'){
-    const x0 = snapV(wp.x), y0 = snapV(wp.y);
+    const x0 = snapV(wp.x,'x'), y0 = snapV(wp.y,'y');
     ui.drag = {
       mode:'create', tool:'rect', x0, y0, preview:null,
       onMove(wp){
-        const x2=snapV(wp.x), y2=snapV(wp.y);
+        const x2=snapV(wp.x,'x'), y2=snapV(wp.y,'y');
         const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
         const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
         this.preview = (w>=1 && h>=1) ? makeRect(x,y,w,h) : null;
@@ -1466,7 +1474,7 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- 水平ライン: クリックのみで即確定（ドラッグ不要） ---
   if(ui.tool==='hline'){
-    const price = snapV(YP(wp.y));
+    const price = snapV(YP(wp.y),'y');
     const s = makeHLine(price);
     act(()=>{ board.objects.push(s); });
     ui.selection = new Set([s.id]);
@@ -1476,7 +1484,7 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- テキスト: クリックで挿入し即座に編集モードへ ---
   if(ui.tool==='text'){
-    const s = makeText(snapV(wp.x), snapV(wp.y));
+    const s = makeText(snapV(wp.x,'x'), snapV(wp.y,'y'));
     act(()=>{ board.objects.push(s); });
     ui.selection = new Set([s.id]);
     setTool('select');
@@ -1486,11 +1494,11 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- 付箋: ドラッグでサイズ指定、クリックのみならデフォルトサイズ ---
   if(ui.tool==='note'){
-    const x0 = snapV(wp.x), y0 = snapV(wp.y);
+    const x0 = snapV(wp.x,'x'), y0 = snapV(wp.y,'y');
     ui.drag = {
       mode:'create', tool:'note', x0, y0, preview:null,
       onMove(wp){
-        const x2=snapV(wp.x), y2=snapV(wp.y);
+        const x2=snapV(wp.x,'x'), y2=snapV(wp.y,'y');
         const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
         const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
         this.preview = (w>=40 && h>=30) ? makeNote(x,y,w,h) : null;
@@ -1505,11 +1513,11 @@ cv.addEventListener('pointerdown', e=>{
 
   // --- フィボナッチ・リトレースメント: 2点ドラッグ。y1=始点(レベル0) / y2=終点(レベル1) ---
   if(ui.tool==='fib'){
-    const x = snapV(wp.x), y = snapV(wp.y);
+    const x = snapV(wp.x,'x'), y = snapV(wp.y,'y');
     ui.drag = {
       mode:'create', tool:'fib', x1:x, y1:y, x2:x, y2:y, preview:null,
       onMove(wp){
-        this.x2 = snapV(wp.x); this.y2 = snapV(wp.y);
+        this.x2 = snapV(wp.x,'x'); this.y2 = snapV(wp.y,'y');
         this.preview = makeFib(this.x1, this.y1, this.x2, this.y2);
       },
       commit(){
@@ -1557,6 +1565,7 @@ cv.addEventListener('pointerdown', e=>{
 });
 
 cv.addEventListener('pointermove', e=>{
+  ui.altHeld = e.altKey;   // keyup 取りこぼしで altHeld が固着するのを毎回のポインタ操作で自己修復する
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
   ui.mouseWorld = wp;
   const d = ui.drag;
@@ -1591,7 +1600,8 @@ cv.addEventListener('pointermove', e=>{
   if(d.mode==='move'){
     let dx = wp.x - d.startW.x, dy = wp.y - d.startW.y;
     const g = board.settings.grid;
-    if(snapOn()){ dx = Math.round(dx/g)*g; dy = Math.round(dy/g)*g; }
+    if(snapOn('x')) dx = Math.round(dx/g)*g;
+    if(snapOn('y')) dy = Math.round(dy/g)*g;
     for(const [id, orig] of d.orig){
       const s = byId(id); if(!s) continue;
       Object.assign(s, clone(orig));
@@ -1705,7 +1715,7 @@ window.addEventListener('keydown', e=>{
   if(!mod){
     if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
     if(!e.shiftKey){
-      const map = { v:'select', h:'hand', k:'candle', p:'pen', l:'line', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
+      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
       const t = map[k.toLowerCase()];
       if(t){ setTool(t); return; }
     }
@@ -1753,6 +1763,8 @@ window.addEventListener('keyup', e=>{
   if(e.key==='Alt'){ ui.altHeld=false; }
 });
 window.addEventListener('blur', ()=>{ ui.spaceHeld=false; ui.altHeld=false; updateCursor(); });
+// フォーカス喪失を伴わずに Alt の keyup だけ取りこぼすケース（ブラウザ/OS のメニュー操作等）向けの保険
+window.addEventListener('focus', ()=>{ ui.altHeld=false; updateCursor(); });
 
 /* ==========================================================================
    10. 編集コマンド
@@ -1761,8 +1773,8 @@ function pasteClipboard(){
   if(!ui.clipboard.length) return;
   const b = unionBBox(ui.clipboard);
   const g = board.settings.grid;
-  let dx = snapV(ui.mouseWorld.x - (b.x + b.w/2));
-  let dy = snapV(ui.mouseWorld.y - (b.y + b.h/2));
+  let dx = snapV(ui.mouseWorld.x - (b.x + b.w/2), 'x');
+  let dy = snapV(ui.mouseWorld.y - (b.y + b.h/2), 'y');
   const copies = ui.clipboard.map(s=>{ const n=clone(s); n.id=uid(); def(n).move(n,dx,dy); return n; });
   act(()=>{ board.objects.push(...copies); ui.selection = new Set(copies.map(s=>s.id)); });
 }
@@ -1794,7 +1806,7 @@ function distributeX(){
   if(sel.length < 2) return;
   const g = board.settings.grid;
   const step = Math.max(g, Math.round(board.settings.candleWidth*1.6/g)*g);
-  const x0 = snapV(sel[0].x);
+  const x0 = snapV(sel[0].x, 'x');
   act(()=>{ sel.forEach((s,i)=>{ s.x = x0 + step*i; }); });
 }
 function fitToContent(){
@@ -1825,7 +1837,8 @@ function syncUI(){ applyTheme(); syncTopbar(); syncToolbar(); buildInspector(); 
 function syncTopbar(){
   $('lblZoom').textContent = Math.round(cam().zoom*100) + '%';
   $('lblGrid').textContent = board.settings.grid;
-  $('btnSnap').classList.toggle('on', board.settings.snap);
+  $('btnSnapX').classList.toggle('on', board.settings.snapX);
+  $('btnSnapY').classList.toggle('on', board.settings.snapY);
   $('lblCount').textContent = board.objects.length + ' オブジェクト'
     + (ui.selection.size ? ` / ${ui.selection.size} 選択中` : '');
 }
@@ -1911,6 +1924,10 @@ function buildCandleInspector(ins, k){
   const sec2 = document.createElement('div'); sec2.className='ins-sec';
   const h2 = document.createElement('div'); h2.className='ins-h'; h2.textContent='操作';
   sec2.appendChild(h2);
+  const flipBtn = document.createElement('button'); flipBtn.className='btn-full';
+  flipBtn.textContent = '反転';
+  flipBtn.onclick = ()=>act(()=>{ [k.o, k.c] = [k.c, k.o]; normalizeCandle(k); });
+  sec2.appendChild(flipBtn);
   const hint = document.createElement('div'); hint.className='hintline';
   hint.innerHTML = '左辺 = <b>O</b>／上 = <b>H</b>／下 = <b>L</b>／右辺 = <b>C</b><br>'
     + 'Enter で右隣に複製<br>Alt でスナップ一時解除';
@@ -2120,7 +2137,11 @@ function buildBoardInspector(ins){
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='ボード設定';
   sec.appendChild(h);
   const S = board.settings;
-  sec.appendChild(num('グリッド幅', S.grid, v=>{ S.grid = clamp(Math.round(v)||1,2,200); touch(); requestRender(); syncUI(); }));
+  const gridRow = document.createElement('div'); gridRow.className='row';
+  const gridL = document.createElement('label'); gridL.textContent='グリッド幅';
+  const gridV = document.createElement('span'); gridV.className='tb-val'; gridV.style.cssText='width:auto;text-align:right';
+  gridV.textContent = FIXED_GRID + '（固定）';
+  gridRow.append(gridL, gridV); sec.appendChild(gridRow);
   sec.appendChild(num('ローソク幅', S.candleWidth, v=>{ S.candleWidth = clamp(v,2,400); touch(); requestRender(); syncUI(); }));
   sec.appendChild(color('陽線', S.bullColor, v=>{ S.bullColor=v; touch(); requestRender(); }));
   sec.appendChild(color('陰線', S.bearColor, v=>{ S.bearColor=v; touch(); requestRender(); }));
@@ -2134,10 +2155,15 @@ function buildBoardInspector(ins){
 
   const snapRow = document.createElement('div'); snapRow.className='row';
   const snapL = document.createElement('label'); snapL.textContent='スナップ';
-  const snapB = document.createElement('button'); snapB.className='tb-btn'+(S.snap?' on':'');
-  snapB.textContent = S.snap ? 'ON' : 'OFF';
-  snapB.onclick = ()=>{ S.snap = !S.snap; touch(); syncUI(); };
-  snapRow.append(snapL,snapB); sec.appendChild(snapRow);
+  const snapWrap = document.createElement('div'); snapWrap.style.display='flex'; snapWrap.style.gap='4px';
+  const snapXB = document.createElement('button'); snapXB.className='tb-btn'+(S.snapX?' on':'');
+  snapXB.textContent = 'X ' + (S.snapX ? 'ON' : 'OFF');
+  snapXB.onclick = ()=>{ S.snapX = !S.snapX; touch(); syncUI(); };
+  const snapYB = document.createElement('button'); snapYB.className='tb-btn'+(S.snapY?' on':'');
+  snapYB.textContent = 'Y ' + (S.snapY ? 'ON' : 'OFF');
+  snapYB.onclick = ()=>{ S.snapY = !S.snapY; touch(); syncUI(); };
+  snapWrap.append(snapXB, snapYB);
+  snapRow.append(snapL,snapWrap); sec.appendChild(snapRow);
 
   const themeRow = document.createElement('div'); themeRow.className='row';
   const themeL = document.createElement('label'); themeL.textContent='テーマ';
@@ -2150,7 +2176,7 @@ function buildBoardInspector(ins){
   ins.appendChild(sec);
 
   const e = document.createElement('div'); e.className='empty';
-  e.innerHTML = 'K を押してドラッグ<br>ローソク足を描けます<br><br>? キーでショートカット一覧';
+  e.innerHTML = 'C を押してドラッグ<br>ローソク足を描けます<br><br>? キーでショートカット一覧';
   ins.appendChild(e);
 }
 
@@ -2165,7 +2191,8 @@ function syncInspectorValues(){
 }
 
 /* ---- トップバーのイベント ---- */
-$('btnSnap').onclick = ()=>{ board.settings.snap = !board.settings.snap; touch(); syncTopbar(); };
+$('btnSnapX').onclick = ()=>{ board.settings.snapX = !board.settings.snapX; touch(); syncTopbar(); };
+$('btnSnapY').onclick = ()=>{ board.settings.snapY = !board.settings.snapY; touch(); syncTopbar(); };
 $('btnZoomIn').onclick = ()=>zoomAtCenter(1.25);
 $('btnZoomOut').onclick = ()=>zoomAtCenter(1/1.25);
 $('btnFit').onclick = fitToContent;
@@ -2312,6 +2339,14 @@ function touch(){
 function hydrateBoard(raw){
   const b = Object.assign(newBoard(), raw);
   b.settings = Object.assign(newBoard().settings, raw.settings||{});
+  b.settings.grid = FIXED_GRID;   // 旧データ/インポートに別の値が入っていても固定値で上書きする
+  // 旧形式（単一の snap: boolean）からの移行: snapX/snapY が未指定の場合のみ引き継ぐ
+  const legacySnap = raw.settings && raw.settings.snap;
+  if(typeof legacySnap === 'boolean' && (raw.settings.snapX===undefined && raw.settings.snapY===undefined)){
+    b.settings.snapX = legacySnap;
+    b.settings.snapY = legacySnap;
+  }
+  delete b.settings.snap;
   b.objects.forEach(o=>{ if(o.type==='candle') normalizeCandle(o); });
   return b;
 }
