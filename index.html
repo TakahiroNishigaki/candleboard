@@ -246,6 +246,7 @@ body{
     <tr><td class="k">V</td><td>選択</td></tr>
     <tr><td class="k">H / Space長押し</td><td>ハンド（パン）</td></tr>
     <tr><td class="k">C</td><td>ローソク足</td></tr>
+    <tr><td class="k">Shift + C</td><td>ローソク足パス（線を描いて一括生成）</td></tr>
     <tr><td class="k">P</td><td>ペン（フリーハンド）</td></tr>
     <tr><td class="k">L</td><td>直線</td></tr>
     <tr><td class="k">G</td><td>折れ線（連続した直線）</td></tr>
@@ -268,11 +269,12 @@ body{
     <tr><td class="k">Enter</td><td>右隣に複製</td></tr>
     <tr><td class="k">Shift + Enter</td><td>左隣に複製</td></tr>
     <tr><td class="k">Ctrl + Shift + A</td><td>X 方向に等間隔整列</td></tr>
-    <tr><td class="grp" colspan="2">折れ線</td></tr>
+    <tr><td class="grp" colspan="2">折れ線 / ローソク足パス</td></tr>
     <tr><td class="k">クリック</td><td>頂点を追加していく</td></tr>
     <tr><td class="k">Enter / ダブルクリック</td><td>確定（最後の頂点をもう一度クリックでも可）</td></tr>
     <tr><td class="k">Esc</td><td>描きかけを破棄</td></tr>
     <tr><td class="k">Shift</td><td>直前の頂点から 45 度刻みに拘束</td></tr>
+    <tr><td class="k">ローソク足パスの確定</td><td>描いた線を価格の中心線として、その周りを振れるローソク足を生成（線自体は残らない）</td></tr>
     <tr><td class="grp" colspan="2">編集</td></tr>
     <tr><td class="k">Shift + クリック</td><td>選択に追加 / 除外</td></tr>
     <tr><td class="k">Ctrl + A</td><td>全選択</td></tr>
@@ -1482,6 +1484,7 @@ const ICON = {
   select:'<path d="M4 2l10 7-4.2 1.1L11 15l-2 .8-1.7-4.6L4 14z"/>',
   hand:  '<path d="M6 9V4.2a1.2 1.2 0 012.4 0V8m0-.4V3.2a1.2 1.2 0 012.4 0V8m0-.6a1.2 1.2 0 012.4 0V11c0 2.8-1.9 4.6-4.4 4.6C6.2 15.6 4 13.9 4 11.4V9.6a1.2 1.2 0 012.4 0"/>',
   candle:'<path d="M9 2v3M9 13v3"/><rect x="6" y="5" width="6" height="8" rx="1"/>',
+  candlepath:'<path d="M2 14l5-4.5 4 2.5 5-6" opacity=".45"/><path d="M7 5.6v7.6"/><rect x="5.8" y="7.4" width="2.4" height="3.6" rx=".4"/><path d="M13 2.6v7.6"/><rect x="11.8" y="4.4" width="2.4" height="3.6" rx=".4"/>',
   pen:   '<path d="M3 15l1-3.4L11.6 4a1.6 1.6 0 012.3 2.3L6.4 14z"/>',
   line:  '<path d="M3 14L15 4"/>',
   polyline:'<path d="M2 13l4-5 3.5 3L15 4"/><circle cx="2" cy="13" r="1.3"/><circle cx="6" cy="8" r="1.3"/><circle cx="9.5" cy="11" r="1.3"/><circle cx="15" cy="4" r="1.3"/>',
@@ -1497,6 +1500,7 @@ const TOOLS = [
   { id:'hand',   key:'H', label:'ハンド（パン）' },
   { div:true },
   { id:'candle', key:'C', label:'ローソク足' },
+  { id:'candlepath', key:'⇧C', label:'ローソク足パス（線を描いて一括生成）' },
   { div:true },
   { id:'pen',    key:'P', label:'ペン' },
   { id:'line',   key:'L', label:'直線' },
@@ -1524,13 +1528,13 @@ function buildToolbar(){
   }
 }
 function setTool(id){
-  // 折れ線の作図中に別ツールへ移るときは、描きかけを捨てずに確定させる
-  if(ui.poly && id !== 'polyline') commitPolyline();
+  // 作図中に別ツールへ移るときは、描きかけを捨てずに確定させる（同じツールの再選択は継続）
+  if(ui.poly && id !== ui.poly.tool) commitPolyline();
   ui.tool = id;
   if(id !== 'select') ui.selection.clear();
   syncUI(); requestRender(); updateCursor();
 }
-const CREATE_TOOLS = new Set(['candle','pen','line','polyline','arrow','hline','rect','text','note','fib']);
+const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','note','fib']);
 /** ハンドルの形状ごとに適切なリサイズカーソルを返す（7.3）。
  *  candle の O/H/L/C・hline の p は価格（Y）方向にしか動かないので ns-resize。
  *  rect の四隅は対角方向なので nwse-resize / nesw-resize を使い分ける。
@@ -1622,12 +1626,14 @@ cv.addEventListener('pointerdown', e=>{
     requestRender(); return;
   }
 
-  // --- 折れ線: クリックで頂点を継ぎ足す（ui.drag ではなく ui.poly でクリックをまたいで保持） ---
-  if(ui.tool==='polyline'){
+  // --- 折れ線 / ローソク足パス: クリックで頂点を継ぎ足す ---
+  // どちらも「クリックを重ねて線を描く」点は同じで、確定時に何になるかだけが違う。
+  // ui.drag はポインタを離すと消えるので、クリックをまたいで残る ui.poly で状態を持つ。
+  if(ui.tool==='polyline' || ui.tool==='candlepath'){
     const pt = polylineInputPoint(wp, e);
     if(!ui.poly){
       ui.selection.clear();
-      ui.poly = { pts:[pt.x, pt.y], cursor:{...pt} };
+      ui.poly = { tool: ui.tool, pts:[pt.x, pt.y], cursor:{...pt} };
     } else {
       // 直前の頂点とほぼ同じ位置なら「打ち止め」の意思表示とみなして確定する。
       // ダブルクリックでの終了も、2回目のクリックがこの条件に合致することで自然に処理される。
@@ -1865,6 +1871,8 @@ function commitPolyline(){
   const p = ui.poly;
   ui.poly = null;
   if(!p || p.pts.length < 4){ requestRender(); return false; }
+  // ローソク足パスの場合、描いた線は下書き扱いでオブジェクトにはせず、ローソク足だけを残す
+  if(p.tool === 'candlepath') return commitCandlePath(p.pts);
   const s = makePolyline(p.pts);
   act(()=>{ board.objects.push(s); });
   ui.selection = new Set([s.id]);
@@ -1974,9 +1982,10 @@ window.addEventListener('keydown', e=>{
   if(k===' ' && !ui.spaceHeld){ ui.spaceHeld=true; updateCursor(); e.preventDefault(); return; }
 
   // --- ツール切替 ---
-  // Shift+L (水平ライン) は l (直線) と衝突するため、必ず先に判定する。
+  // Shift+L (水平ライン) / Shift+C (ローソク足パス) は l / c と衝突するため、必ず先に判定する。
   if(!mod){
     if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
+    if(e.shiftKey && k.toUpperCase()==='C'){ setTool('candlepath'); return; }
     if(!e.shiftKey){
       const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
       const t = map[k.toLowerCase()];
@@ -2078,6 +2087,128 @@ function distributeX(){
   const x0 = snapV(sel[0].x, 'x');
   act(()=>{ sel.forEach((s,i)=>{ s.x = x0 + step*i; }); });
 }
+
+/* ---- ローソク足パス: 描いた折れ線からローソク足を生成 --------------------
+   「ローソク足パス」ツールで描いた線を「価格の中心線」とみなし、
+   確定した時点でその周りを振れるローソク足に変換する。
+   線そのものはオブジェクトとして残さない（あくまで入力のための下書き）。
+
+   整合性の肝は、ローソク1本ずつを独立に作らず「区間の境界価格」を先に決めて
+   隣り合う2本で共有すること。境界 j の価格を p[j] とすると
+       ローソク i の始値 = p[i]、終値 = p[i+1]
+   となるので、始値 = 前本の終値 が構成上そもそも崩れない（＝窓が開かない）。
+   p[j] は「折れ線の値 ± 揺らぎ」なので、実体は中心線の周りを行き来する。
+   高値/安値は実体の外側へ伸ばし、最後に normalizeCandle() で
+   h >= max(o,c) >= min(o,c) >= l を保証する。
+
+   揺らぎは折れ線の座標から作った種で決定論的に出す（同じ折れ線からは常に同じ結果）。
+   ------------------------------------------------------------------------ */
+/** 折れ線を「Xの関数」とみなして x 位置のワールドY を返す。
+ *  x を含む最初の線分を線形補間する（左→右に描かれた通常の折れ線なら一意）。
+ *  X範囲の外側は端点の値で水平に外挿する。 */
+function polylineYAt(pts, x){
+  for(let i=0;i<pts.length-2;i+=2){
+    const x1=pts[i], y1=pts[i+1], x2=pts[i+2], y2=pts[i+3];
+    if(x >= Math.min(x1,x2) && x <= Math.max(x1,x2)){
+      if(x1 === x2) return (y1+y2)/2;          // 垂直な線分は中点で代表させる
+      return y1 + (x-x1)/(x2-x1)*(y2-y1);
+    }
+  }
+  const firstX = pts[0], lastX = pts[pts.length-2];
+  return Math.abs(x-firstX) <= Math.abs(x-lastX) ? pts[1] : pts[pts.length-1];
+}
+/** 折れ線の座標から 32bit の種を作る（FNV-1a）。同じ形なら常に同じ種になる */
+function seedFromPts(pts){
+  let h = 2166136261 >>> 0;
+  for(const v of pts){
+    let n = Math.round(v*100) | 0;
+    for(let b=0;b<4;b++){ h = Math.imul(h ^ (n & 0xff), 16777619); n >>>= 8; }
+  }
+  return h >>> 0;
+}
+/** 種から決定論的な擬似乱数列を作る（mulberry32） */
+function rngFrom(seed){
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const MAX_GENERATED_CANDLES = 400;   // 広大な折れ線から数千本作って固まらないための上限
+/** 折れ線をローソク足に割り付けるときの配置（本数・間隔・開始X）を決める。
+ *  インスペクタの本数プレビューと実際の生成で同じ結果を使うため関数に切り出してある。 */
+function polylineCandleLayout(pts){
+  if(!pts || pts.length < 4) return null;
+  const g = board.settings.grid;
+  let minX = Infinity, maxX = -Infinity;
+  for(let i=0;i<pts.length;i+=2){
+    if(pts[i] < minX) minX = pts[i];
+    if(pts[i] > maxX) maxX = pts[i];
+  }
+  // X方向は既存のローソク間隔（Enter複製やX方向整列と同じピッチ）に合わせる
+  let step = Math.max(g, Math.round(board.settings.candleWidth*1.6/g)*g);
+  let n = Math.floor((maxX-minX)/step) + 1;
+  if(n > MAX_GENERATED_CANDLES){
+    // 本数を打ち切ると折れ線の一部しか埋まらないので、間隔を広げて全体を覆う。
+    // 広げた間隔でも端数で1本はみ出しうるので、最後に上限で頭打ちにする。
+    step = Math.max(step, Math.ceil((maxX-minX)/MAX_GENERATED_CANDLES/g)*g);
+    n = Math.min(MAX_GENERATED_CANDLES, Math.floor((maxX-minX)/step) + 1);
+  }
+  if(n < 1) return null;
+  return { step, n, startX: snapV(minX, 'x') };
+}
+/** 点列から整合性のあるローソク足の配列を作って返す（board は変更しない） */
+function candlesFromPolyline(pts){
+  const lay = polylineCandleLayout(pts);
+  if(!lay) return [];
+  const { step, n, startX } = lay;
+  const g = board.settings.grid;
+  // 境界 j はローソク i の左端。ローソク i は [bounds[i], bounds[i+1]] を担当する
+  const base = [];
+  for(let j=0;j<=n;j++){
+    const bx = startX - step/2 + j*step;
+    base.push(YP(polylineYAt(pts, bx)));       // ワールドY -> 価格
+  }
+
+  // 揺らぎの大きさ: 折れ線自身の値動きに追従させつつ、平坦な折れ線でも実体が見える下限を持たせる
+  let span = 0, move = 0;
+  {
+    let lo = Infinity, hi = -Infinity;
+    for(const v of base){ if(v<lo) lo=v; if(v>hi) hi=v; }
+    span = hi - lo;
+    for(let j=0;j<base.length-1;j++) move += Math.abs(base[j+1]-base[j]);
+    move /= Math.max(1, base.length-1);
+  }
+  const amp = Math.max(g*0.9, span*0.05, move*1.1);
+
+  const rnd = rngFrom(seedFromPts(pts));
+  const round2 = v => Math.round(v*100)/100;
+  // 境界価格 = 中心線 ± 揺らぎ。隣接ローソクはこの配列を共有するので窓が開かない
+  const p = base.map(v => round2(v + (rnd()*2-1)*amp*0.5));
+
+  const out = [];
+  for(let i=0;i<n;i++){
+    const o = p[i], c = p[i+1];
+    const top = Math.max(o,c), bot = Math.min(o,c);
+    const h = round2(top + amp*(0.25 + rnd()*0.55));
+    const l = round2(bot - amp*(0.25 + rnd()*0.55));
+    out.push(normalizeCandle({ id:uid(), type:'candle', x: startX + i*step, o, h, l, c }));
+  }
+  return out;
+}
+/** 描いた点列をローソク足として確定する。作れたら true（1回の Undo で消せる） */
+function commitCandlePath(pts){
+  const ks = candlesFromPolyline(pts);
+  if(!ks.length){ requestRender(); return false; }
+  act(()=>{
+    board.objects.push(...ks);
+    ui.selection = new Set(ks.map(k => k.id));
+  });
+  return true;
+}
+
 function fitToContent(){
   const c = cam();
   if(!board.objects.length){ c.zoom=1; c.x=-W/2; c.y=-H/2; requestRender(); syncTopbar(); return; }
