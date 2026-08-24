@@ -2098,6 +2098,8 @@ function distributeX(){
        ローソク i の始値 = p[i]、終値 = p[i+1]
    となるので、始値 = 前本の終値 が構成上そもそも崩れない（＝窓が開かない）。
    p[j] は「折れ線の値 ± 揺らぎ」なので、実体は中心線の周りを行き来する。
+   揺らぎの幅は「1本あたりの値動き」に対して十分大きく取る。ここが小さいと
+   実体の向きが中心線の傾きだけで決まり、陽線／陰線がひどく偏ってしまう。
    高値/安値は実体の外側へ伸ばし、最後に normalizeCandle() で
    h >= max(o,c) >= min(o,c) >= l を保証する。
 
@@ -2182,11 +2184,17 @@ function candlesFromPolyline(pts){
     move /= Math.max(1, base.length-1);
   }
   const amp = Math.max(g*0.9, span*0.05, move*1.1);
+  // 実体の向きは p[i+1]-p[i] の符号、つまり「中心線の傾き + 揺らぎの差」で決まる。
+  // 揺らぎが傾きに対して小さいと符号が傾きだけで決まってしまい、右上がりの線なら
+  // ほぼ全部が陽線になる。逆向きのローソクが 3 割ほど混ざるよう、揺らぎの幅は
+  // 1本あたりの値動きの 2.2 倍を下限にする（この比で逆張りが約 30% 出る）。
+  // ただし広げすぎると折れ線の形そのものが読めなくなるので、全体の値幅で頭打ちにする。
+  const jitter = Math.min(Math.max(amp*0.5, move*2.2), Math.max(amp*0.5, span*0.15));
 
   const rnd = rngFrom(seedFromPts(pts));
   const round2 = v => Math.round(v*100)/100;
   // 境界価格 = 中心線 ± 揺らぎ。隣接ローソクはこの配列を共有するので窓が開かない
-  const p = base.map(v => round2(v + (rnd()*2-1)*amp*0.5));
+  const p = base.map(v => round2(v + (rnd()*2-1)*jitter));
 
   const out = [];
   for(let i=0;i<n;i++){
