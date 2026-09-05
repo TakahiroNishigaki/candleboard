@@ -289,7 +289,10 @@ body{
     <tr><td class="k">Shift（直線/矢印/折れ線の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
     <tr><td class="k">Shift（フィボナッチの端点ドラッグ中）</td><td>価格（Y）を固定し水平方向にのみ移動</td></tr>
     <tr><td class="k">Shift（矩形ゾーンの作成/角ハンドルドラッグ中）</td><td>正方形に制約</td></tr>
-    <tr><td class="k">テキストの四隅ハンドル</td><td>ドラッグで拡大縮小（対角のコーナーを固定）</td></tr>
+    <tr><td class="k">テキストツールでドラッグ</td><td>枠の高さ＝文字サイズ、枠の幅＝折り返し幅（クリックのみなら直前のサイズ）</td></tr>
+    <tr><td class="k">テキストの四隅ハンドル</td><td>文字サイズと折り返し幅を同じ倍率で拡大縮小</td></tr>
+    <tr><td class="k">テキストの左右の辺ハンドル</td><td>折り返し幅だけを変える（文字サイズはそのまま）</td></tr>
+    <tr><td class="k">テキストの上下の辺ハンドル</td><td>文字サイズだけを変える（折り返し幅はそのまま）</td></tr>
     <tr><td class="k">テキストの上のハンドル</td><td>ドラッグで回転（Shift で 15 度刻み）</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
@@ -468,7 +471,7 @@ function pruneSelection(){
      anchor(s)                -> {x,y}  移動スナップでグリッド線に合わせる基準点
      handles(s)               -> [{id,x,y}]  ワールド座標（選択中のみ表示）
                                  kind:'rot' と from:{x,y} を添えると回転ノブとして描く
-     dragHandle(s, id, wpt)   -> ハンドルドラッグ処理
+     dragHandle(s, id, wpt, ev, orig) -> ハンドルドラッグ処理（orig=ドラッグ開始時の姿）
      outline(s)               -> [{x,y}]  選択枠の多角形（省略時は bbox の矩形）
    ========================================================================== */
 const Shapes = {};
@@ -667,18 +670,27 @@ function roundRectPath(ctx,x,y,w,h,r){
   ctx.closePath();
 }
 /** 文字単位で折り返す（分かち書きのない日本語でも自然に改行される） */
-function wrapText(ctx, text, x, y, maxWidth, lineHeight){
-  const paragraphs = String(text).split('\n');
-  let cy = y;
-  for(const para of paragraphs){
-    if(para === ''){ cy += lineHeight; continue; }
+/** maxWidth に収まるよう1文字ずつ詰めて行に分ける（日本語も折れるよう単語単位ではなく文字単位）。
+ *  描画と採寸で同じ結果を使いたいので関数に切り出してある。ctx.font は呼び出し側で設定しておくこと。 */
+function wrapLines(ctx, text, maxWidth){
+  const out = [];
+  for(const para of String(text).split('\n')){
+    if(para === ''){ out.push(''); continue; }
     let line = '';
     for(const ch of para){
       const test = line + ch;
-      if(line && ctx.measureText(test).width > maxWidth){ ctx.fillText(line, x, cy); cy += lineHeight; line = ch; }
+      if(line && ctx.measureText(test).width > maxWidth){ out.push(line); line = ch; }
       else line = test;
     }
-    if(line){ ctx.fillText(line, x, cy); cy += lineHeight; }
+    if(line) out.push(line);
+  }
+  return out;
+}
+function wrapText(ctx, text, x, y, maxWidth, lineHeight){
+  let cy = y;
+  for(const ln of wrapLines(ctx, text, maxWidth)){
+    if(ln) ctx.fillText(ln, x, cy);
+    cy += lineHeight;
   }
   return cy;
 }
@@ -943,19 +955,23 @@ Shapes.pen = {
    ------------------------------------------------------------------------ */
 function makeText(x,y){ return withLastParams('text', { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', rot:0, style:{...DEFAULT_STYLE} }); }
 const TEXT_MIN_FS = 4, TEXT_MAX_FS = 400;
+const TEXT_LINE_H = 1.3;            // 行の高さ（fontSize 倍）。枠の高さ→フォントサイズの換算にも使う
+/** 折り返し幅（ワールド単位）。0/未設定なら折り返さない */
+const textWrapW = s => (s.wrap > 0 ? s.wrap : Infinity);
 const TEXT_ROT_ARM = 26;            // 回転ハンドルを上辺から離す距離（スクリーン px）
 const TEXT_ROT_SNAP = 15;           // Shift 併用時の角度スナップ（度）
 const textRot = s => (s.rot||0) * Math.PI/180;
 /** 回転を無視した素の箱。measureText のフォント指定をここに集約する */
 function textLocalBox(s){
-  const lines = (s.text||'').split('\n');
-  const fs = s.fontSize||16;
+  const fs = s.fontSize||16, lh = fs*TEXT_LINE_H;
   // 簡易計測: canvas 2D の measureText を使う（オフスクリーン ctx を共有）
   ctx.save(); ctx.font = `${fs}px -apple-system,sans-serif`;
+  const lines = wrapLines(ctx, s.text||'', textWrapW(s));
   let w = 0; for(const ln of lines) w = Math.max(w, ctx.measureText(ln||' ').width);
   ctx.restore();
-  const h = Math.max(fs*1.3, lines.length*fs*1.3);
-  return { x:s.x, y:s.y, w:Math.max(w,20), h };
+  // 折り返し幅を持つならそれが箱の幅（＝ドラッグで描いた枠の幅）。揃えの基準もこの幅になる。
+  // 1文字が折り返し幅より広いときに文字がはみ出さないよう、実測幅とも比較しておく。
+  return { x:s.x, y:s.y, w:Math.max(w, s.wrap||0, 20), h:Math.max(lh, lines.length*lh) };
 }
 /** 回転の中心（箱の中心）。s.rot に依存しないので回転中もぶれない */
 function textCenter(s){ const b = textLocalBox(s); return { x:b.x+b.w/2, y:b.y+b.h/2 }; }
@@ -999,7 +1015,7 @@ Shapes.text = {
     ctx.textBaseline = 'top';
     ctx.textAlign = s.align||'left';
     const ax = s.align==='center' ? s.x+b.w/2 : s.align==='right' ? s.x+b.w : s.x;
-    wrapText(ctx, s.text||'', ax, s.y, 100000, (s.fontSize||16)*1.3);
+    wrapText(ctx, s.text||'', ax, s.y, textWrapW(s), (s.fontSize||16)*TEXT_LINE_H);
     ctx.restore();
   },
   hit(s, p, tol){
@@ -1010,35 +1026,63 @@ Shapes.text = {
   anchor: s => ({ x:s.x, y:s.y }),
   outline: s => textCorners(s),
   handles(s){
-    const b = textLocalBox(s), c = textCorners(s);
+    const b = textLocalBox(s);
+    const P = (lx,ly) => textToWorld(s, lx, ly);
+    const x0=b.x, xm=b.x+b.w/2, x1=b.x+b.w, y0=b.y, ym=b.y+b.h/2, y1=b.y+b.h;
     // 回転ハンドルは上辺の中央から外へ。腕の長さはズームで割ってスクリーン上一定に見せる
-    const top = textToWorld(s, b.x+b.w/2, b.y);
-    const arm = textToWorld(s, b.x+b.w/2, b.y - TEXT_ROT_ARM/cam().zoom);
-    return [ {id:'nw',...c[0]}, {id:'ne',...c[1]}, {id:'se',...c[2]}, {id:'sw',...c[3]},
-             {id:'rot', x:arm.x, y:arm.y, kind:'rot', from:top} ];
+    return [
+      {id:'nw',...P(x0,y0)}, {id:'n',...P(xm,y0)}, {id:'ne',...P(x1,y0)},
+      {id:'e', ...P(x1,ym)}, {id:'se',...P(x1,y1)}, {id:'s', ...P(xm,y1)},
+      {id:'sw',...P(x0,y1)}, {id:'w', ...P(x0,ym)},
+      {id:'rot', ...P(xm, y0 - TEXT_ROT_ARM/cam().zoom), kind:'rot', from:P(xm,y0)},
+    ];
   },
-  dragHandle(s, id, p, ev){
-    const c = textCenter(s);
+  /* ハンドルの役割は掴んだ位置で変える。テキストの大きさを決めるのは fontSize と
+     折り返し幅の 2 つだけなので、
+       四隅     -> 両方を同じ倍率で（相似に拡大縮小）
+       左右の辺 -> 折り返し幅だけ（文字サイズは変えずに幅を広げたいとき）
+       上下の辺 -> 文字サイズだけ（折り返し幅は据え置き）
+     と割り当てる。いずれも掴んだ辺/角の反対側をワールド上に固定する。 */
+  dragHandle(s, id, p, ev, orig){
     if(id === 'rot'){
       // ハンドルは上辺側（ローカルで -y 方向）にあるので、角度に 90 度足して真上を 0 度にする
+      const c = textCenter(s);
       let deg = Math.atan2(p.y-c.y, p.x-c.x)*180/Math.PI + 90;
       if(ev && ev.shiftKey) deg = Math.round(deg/TEXT_ROT_SNAP)*TEXT_ROT_SNAP;
       s.rot = ((deg % 360) + 360) % 360;
       return;
     }
-    // 四隅: 対角のコーナーをワールド上に固定したまま fontSize だけ変える（相似拡大縮小）
     const b = textLocalBox(s);
-    const fx = id.includes('e') ? 0 : 1, fy = id.includes('s') ? 0 : 1;   // 固定するのは対角側
+    const q = textToLocal(s, p.x, p.y);        // 回転前の座標系で考える
+    const horiz = id.includes('e') || id.includes('w');
+    const vert  = id.includes('n') || id.includes('s');
+    // 固定点。掴んでいない軸は動かないので、その軸は左上側を使っておけばよい
+    const fx = id.includes('e') ? 0 : id.includes('w') ? 1 : 0;
+    const fy = id.includes('s') ? 0 : id.includes('n') ? 1 : 0;
     const fixL = { x: b.x + fx*b.w, y: b.y + fy*b.h };
     const fixW = textToWorld(s, fixL.x, fixL.y);
-    const dragL = { x: b.x + (1-fx)*b.w, y: b.y + (1-fy)*b.h };
-    // 倍率は対角ベクトルへの射影で決める。回転していても掴んだ向きに素直に効く
-    const q = textToLocal(s, p.x, p.y);
-    const vx = dragL.x-fixL.x, vy = dragL.y-fixL.y;
-    const den = vx*vx + vy*vy;
-    const k = den ? ((q.x-fixL.x)*vx + (q.y-fixL.y)*vy)/den : 1;
-    s.fontSize = Math.round(clamp((s.fontSize||16)*k, TEXT_MIN_FS, TEXT_MAX_FS)*10)/10;
-    // 新しい大きさで固定コーナーが元の位置に戻るよう左上を置き直す
+    const fs0 = s.fontSize||16;
+
+    if(horiz && vert){
+      // 四隅: 倍率は対角ベクトルへの射影で決める。回転していても掴んだ向きに素直に効く
+      const vx = (1-2*fx)*b.w, vy = (1-2*fy)*b.h;
+      const den = vx*vx + vy*vy;
+      const k = den ? ((q.x-fixL.x)*vx + (q.y-fixL.y)*vy)/den : 1;
+      s.fontSize = Math.round(clamp(fs0*k, TEXT_MIN_FS, TEXT_MAX_FS)*10)/10;
+      if(s.wrap) s.wrap *= s.fontSize/fs0;     // 折り返し幅も同じ倍率で（クランプ後の実倍率を使う）
+    } else if(horiz){
+      // 左右の辺: 折り返し幅のみ。1文字ぶんは残す（それ以下だと1文字1行になって潰れる）
+      s.wrap = Math.max(Math.abs(q.x-fixL.x), fs0);
+    } else {
+      // 上下の辺: 文字サイズのみ。折り返し幅が固定なので文字を大きくすると行数も増える。
+      // 行数を今の値から採ると増減が跳ね返って発振するので、ドラッグ開始時の行数で割る。
+      const o = orig || s;
+      const lines0 = Math.max(1, Math.round(textLocalBox(o).h / ((o.fontSize||16)*TEXT_LINE_H)));
+      const fs = Math.abs(q.y-fixL.y) / (lines0*TEXT_LINE_H);
+      s.fontSize = Math.round(clamp(fs, TEXT_MIN_FS, TEXT_MAX_FS)*10)/10;
+    }
+
+    // 新しい大きさで固定点が元の位置に戻るよう左上を置き直す
     const nb = textLocalBox(s);
     const a = textRot(s), cos = Math.cos(a), sin = Math.sin(a);
     const ox = (fx-0.5)*nb.w, oy = (fy-0.5)*nb.h;
@@ -1243,6 +1287,7 @@ function render(){
   drawHover();
   drawSelection();
   drawMarquee();
+  drawTextFrame();
   drawHLineLabels();
   drawFibLabels();
   drawEmptyHint();
@@ -1316,6 +1361,25 @@ function drawCreatePreview(){
   ctx.globalAlpha = .75;
   def(d.preview).draw(ctx, d.preview);   // 型に依存しない汎用ディスパッチ
   ctx.globalAlpha = 1;
+}
+
+/** テキスト作成中のガイド枠。中身が未入力で本体を描けないので、枠と確定後の文字サイズを見せる */
+function drawTextFrame(){
+  const d = ui.drag;
+  if(!d || d.mode!=='create' || d.tool!=='text' || !d.frame) return;
+  const f = d.frame, z = cam().zoom, p = w2s(f.x, f.y);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(76,141,255,.85)';
+  ctx.lineWidth = 1.25;
+  ctx.setLineDash([4,3]);
+  ctx.strokeRect(p.x, p.y, f.w*z, f.h*z);
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(76,141,255,.95)';
+  ctx.font = '600 11px -apple-system,sans-serif';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+  ctx.fillText(Math.round(clamp(f.fs, TEXT_MIN_FS, TEXT_MAX_FS)) + 'px', p.x, p.y-4);
+  ctx.restore();
 }
 
 /** 作図中の折れ線: 確定済みの区間＋カーソルまでの仮の1区間＋頂点マーカーを描く */
@@ -1414,8 +1478,9 @@ function drawSelection(){
     ctx.beginPath();
     ctx.rect(p.x-HANDLE_R, p.y-HANDLE_R, HANDLE_R*2, HANDLE_R*2);
     ctx.fill(); ctx.stroke();
-    // ラベル（candle の O/H/L/C のような意味のある短いIDのみ表示。nw/se 等の合成IDは省略）
-    if(hd.id.length <= 1){
+    // ラベル（candle の O/H/L/C のような意味のある短いIDのみ表示。
+    //   nw/se 等の合成ID と、辺の n/e/s/w のような方角IDは省略）
+    if(hd.id.length <= 1 && !'nesw'.includes(hd.id)){
       ctx.fillStyle = 'rgba(255,255,255,.55)';
       ctx.font = '600 9px -apple-system,sans-serif';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -1536,6 +1601,8 @@ function positionEditDiv(div, s){
     div.style.font = `${(s.fontSize||16)*z}px -apple-system,sans-serif`;
     div.style.color = styleOf(s).stroke;
     div.style.minWidth = '20px';
+    // 折り返し幅があれば同じ幅で折り返す（.shape-edit は white-space:pre-wrap なので幅指定だけで効く）
+    div.style.width = s.wrap ? (s.wrap*z)+'px' : '';
     div.style.textAlign = s.align || 'left';
     // 回転はキャンバス側と揃えて箱の中心まわり。div の実寸と measureText の箱は
     // 完全一致しないが、中心基準にしておけばズレは見た目に出ない程度に収まる
@@ -1667,7 +1734,10 @@ function handleCursor(s, id){
     case 'line': case 'arrow': case 'fib': case 'polyline':
       return 'move';
     case 'text':
-      return id==='rot' ? 'grab' : (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
+      if(id==='rot') return 'grab';
+      if(id==='n' || id==='s') return 'ns-resize';
+      if(id==='e' || id==='w') return 'ew-resize';
+      return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
     default:
       return 'ns-resize';
   }
@@ -1818,14 +1888,32 @@ cv.addEventListener('pointerdown', e=>{
     return;
   }
 
-  // --- テキスト: クリックで挿入し即座に編集モードへ ---
+  // --- テキスト: ドラッグで文字サイズ（枠の高さ）と折り返し幅（枠の幅）を指定。
+  //     クリックのみなら従来通り直前のサイズで挿入し、どちらも確定後そのまま編集へ ---
   if(ui.tool==='text'){
-    const s = makeText(snapV(wp.x,'x'), snapV(wp.y,'y'));
-    act(()=>{ board.objects.push(s); });
-    ui.selection = new Set([s.id]);
-    setTool('select');
-    startEditing(s);
-    return;
+    const x0 = snapV(wp.x,'x'), y0 = snapV(wp.y,'y');
+    ui.drag = {
+      mode:'create', tool:'text', x0, y0, frame:null,
+      onMove(wp){
+        const x2=snapV(wp.x,'x'), y2=snapV(wp.y,'y');
+        const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
+        const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
+        // 1行の高さ = fontSize*TEXT_LINE_H なので、枠の高さがそのまま1行分の高さになる
+        const fs = h/TEXT_LINE_H;
+        this.frame = (w > 0 && fs >= TEXT_MIN_FS) ? { x, y, w, h, fs } : null;
+      },
+      commit(){
+        const f = this.frame;
+        const s = makeText(f ? f.x : this.x0, f ? f.y : this.y0);
+        if(f){
+          s.fontSize = Math.round(clamp(f.fs, TEXT_MIN_FS, TEXT_MAX_FS)*10)/10;
+          s.wrap = f.w;
+        }
+        return s;
+      },
+    };
+    ui.drag.onMove(wp);
+    requestRender(); return;
   }
 
   // --- 付箋: ドラッグでサイズ指定、クリックのみならデフォルトサイズ ---
@@ -1872,7 +1960,9 @@ cv.addEventListener('pointerdown', e=>{
     const hh = hitHandle(sp);
     if(hh){                                       // ハンドルドラッグ
       beginAction();
-      ui.drag = { mode:'handle', id:hh.shape.id, handle:hh.handle };
+      // orig はドラッグ開始時の姿。途中の状態から倍率を求めると発振する処理（テキストの
+      // 上下辺ハンドル）が参照する。使わない型は 5 番目の引数を無視すればよい。
+      ui.drag = { mode:'handle', id:hh.shape.id, handle:hh.handle, orig: clone(hh.shape) };
       requestRender(); return;
     }
     const hit = hitObject(wp);
@@ -1940,7 +2030,7 @@ cv.addEventListener('pointermove', e=>{
   }
   if(d.mode==='handle'){
     const s = byId(d.id); if(!s) return;
-    def(s).dragHandle(s, d.handle, wp, e);
+    def(s).dragHandle(s, d.handle, wp, e, d.orig);
     requestRender(); syncInspectorValues(); return;
   }
   if(d.mode==='move'){
@@ -2020,7 +2110,7 @@ function endDrag(){
     if(s){
       act(()=>{ board.objects.push(s); });
       ui.selection = new Set([s.id]);
-      if(s.type==='note') startEditing(s);   // 付箋はドラッグ確定直後にそのまま編集へ
+      if(s.type==='note' || s.type==='text') startEditing(s);   // 付箋/テキストは確定直後にそのまま編集へ
     }
     setTool('select');
   } else if(d.mode==='handle' || d.mode==='move'){
@@ -2621,6 +2711,7 @@ function buildTextInspector(ins, s){
   sec.appendChild(h);
   sec.appendChild(num('フォントサイズ', s.fontSize||16, v=>act(()=>{ s.fontSize=clamp(v,TEXT_MIN_FS,TEXT_MAX_FS); }), 1));
   sec.appendChild(num('角度（度）', Math.round(s.rot||0), v=>act(()=>{ s.rot = ((v%360)+360)%360; }), 1));
+  sec.appendChild(num('折り返し幅（0で無効）', Math.round(s.wrap||0), v=>act(()=>{ s.wrap = Math.max(0, v||0); }), 1));
   const st = s.style = s.style || {...DEFAULT_STYLE};
   sec.appendChild(color('文字色', st.stroke, v=>{ st.stroke=v; }));
 
@@ -2636,7 +2727,8 @@ function buildTextInspector(ins, s){
   row.append(l,wrap); sec.appendChild(row);
 
   const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
-  hint.textContent = 'ダブルクリックで再編集 / 四隅で拡大縮小・上のハンドルで回転（Shift で15度ずつ）';
+  hint.innerHTML = 'ダブルクリックで再編集<br>四隅＝相似に拡大縮小 / 左右の辺＝折り返し幅 / 上下の辺＝文字サイズ'
+    + '<br>上のハンドルで回転（Shift で15度ずつ）<br>テキストツールはドラッグで文字サイズと折り返し幅を指定';
   sec.appendChild(hint);
   ins.appendChild(sec);
 }
