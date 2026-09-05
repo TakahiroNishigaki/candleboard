@@ -255,6 +255,7 @@ body{
     <tr><td class="k">Shift + L</td><td>水平ライン</td></tr>
     <tr><td class="k">R</td><td>矩形ゾーン</td></tr>
     <tr><td class="k">T</td><td>テキスト</td></tr>
+    <tr><td class="k">N</td><td>番号バッジ</td></tr>
     <tr><td class="k">F</td><td>フィボナッチ・リトレースメント</td></tr>
     <tr><td class="grp" colspan="2">ビュー</td></tr>
     <tr><td class="k">ホイール</td><td>上下パン</td></tr>
@@ -289,6 +290,7 @@ body{
     <tr><td class="k">Shift（直線/矢印/折れ線の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
     <tr><td class="k">Shift（フィボナッチの端点ドラッグ中）</td><td>価格（Y）を固定し水平方向にのみ移動</td></tr>
     <tr><td class="k">Shift（矩形ゾーンの作成/角ハンドルドラッグ中）</td><td>正方形に制約</td></tr>
+    <tr><td class="k">番号バッジをクリック</td><td>1,2,3… / A,B,C… を数えながら置く。系列と次の値は右パネルで指定</td></tr>
     <tr><td class="k">テキストツールでドラッグ</td><td>枠の高さ＝文字サイズ、枠の幅＝折り返し幅（クリックのみなら直前のサイズ）</td></tr>
     <tr><td class="k">テキストの四隅ハンドル</td><td>文字サイズと折り返し幅を同じ倍率で拡大縮小</td></tr>
     <tr><td class="k">テキストの左右の辺ハンドル</td><td>折り返し幅だけを変える（文字サイズはそのまま）</td></tr>
@@ -401,6 +403,7 @@ const ui = {
   mouseWorld: {x:0,y:0},
   clipboard: [],
   editing: null,       // { id, div } — text の contenteditable 編集中はここに入る
+  badgeNext: null,     // 番号バッジの「次の値」の手動指定。null なら板の中身から導出する
   lastParams: {},      // 型ごとの「直近に編集されたスタイル的パラメータ」。新規作成時の初期値に使う
   poly: null,          // { pts:[x,y,...], cursor:{x,y} } — 折れ線の作図中。ui.drag と違いクリックをまたいで残る
 };
@@ -602,6 +605,7 @@ const CARRY_PARAMS = {
   hline: ['style'],
   pen:   ['style'],
   text:  ['style','fontSize','align'],
+  badge: ['style','r','seq'],
   fib:   ['style','levels','extend','showPrice'],
 };
 /** 1オブジェクト分を記憶する。記憶したら true を返す（呼び出し側が1回だけ保存できるように） */
@@ -1085,6 +1089,105 @@ Shapes.text = {
     const ox = (fx-0.5)*nb.w, oy = (fy-0.5)*nb.h;
     s.x = fixW.x - nb.w/2 - (ox*cos - oy*sin);
     s.y = fixW.y - nb.h/2 - (ox*sin + oy*cos);
+  },
+};
+
+/* ---------- 番号バッジ（1,2,3… / A,B,C… を数えながら置く）--------------------
+   保持するのは「序数 n」と「系列 seq」だけで、表示文字列は badgeLabel() で作る。
+   置いた後に系列を切り替えても番号の並びが崩れないようにするため。
+
+   次に置く値は原則 board から導出する（同じ系列の最大 n + 1）。カウンタを別に
+   持たないので、Undo/Redo や板の切り替えで値がずれることがない。
+   途中の1つを消しても後ろは詰めない ＝ 穴が空いたまま次は最大+1 になる。
+   「次の値」を手で指定したときだけ ui.badgeNext がその導出を上書きする。
+   ------------------------------------------------------------------------ */
+const BADGE_SEQS = ['123', 'ABC', 'abc'];
+const BADGE_DEFAULT_R = 10, BADGE_MIN_R = 3, BADGE_MAX_R = 400;
+/** 序数 -> 表示文字列。英字は A..Z, AA..AZ, BA.. と桁上がりする（26進の bijective 表記） */
+function badgeLabel(nn, seq){
+  const v0 = Math.max(1, Math.round(nn || 1));
+  if(seq !== 'ABC' && seq !== 'abc') return String(v0);
+  let out = '', v = v0;
+  while(v > 0){ const r = (v-1) % 26; out = String.fromCharCode(65+r) + out; v = Math.floor((v-1)/26); }
+  return seq === 'abc' ? out.toLowerCase() : out;
+}
+/** 表示文字列 -> 序数。badgeLabel() の逆。解釈できなければ null */
+function parseBadgeLabel(txt, seq){
+  const t = String(txt == null ? '' : txt).trim();
+  if(seq !== 'ABC' && seq !== 'abc'){
+    const v = parseInt(t, 10);
+    return isFinite(v) ? clamp(v, 1, 999999) : null;
+  }
+  const up = t.toUpperCase();
+  if(!/^[A-Z]+$/.test(up)) return null;
+  let v = 0;
+  for(const ch of up) v = v*26 + (ch.charCodeAt(0) - 64);
+  return clamp(v, 1, 999999);
+}
+/** ツールが今使っている系列。直近に置いたバッジの設定（＝引き継ぎパラメータ）を正とする */
+const currentBadgeSeq = () => {
+  const q = ui.lastParams.badge;
+  return (q && BADGE_SEQS.includes(q.seq)) ? q.seq : '123';
+};
+function setBadgeSeq(seq){
+  ui.lastParams.badge = Object.assign({}, ui.lastParams.badge, { seq });
+  saveLastParams();
+  ui.badgeNext = null;     // 系列を変えたら「次の値」の指定は捨て、板から採り直す
+}
+/** 次に置く序数 */
+function nextBadgeN(){
+  if(ui.badgeNext != null) return ui.badgeNext;
+  const seq = currentBadgeSeq();
+  let mx = 0;
+  for(const o of board.objects) if(o.type === 'badge' && o.seq === seq && o.n > mx) mx = o.n;
+  return mx + 1;
+}
+function makeBadge(x, y){
+  const b = withLastParams('badge', { id:uid(), type:'badge', x, y, r:BADGE_DEFAULT_R, n:1, seq:'123', style:{...DEFAULT_STYLE} });
+  b.seq = currentBadgeSeq();
+  b.n = nextBadgeN();
+  return b;
+}
+/** 背景色の上で読める文字色（明るい地なら黒、暗い地なら白）。#rgb / #rrggbb を想定 */
+function readableOn(bg){
+  let c = String(bg || '').replace('#', '');
+  if(c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+  if(!/^[0-9a-fA-F]{6}$/.test(c)) return '#1a1a1a';
+  const r = parseInt(c.slice(0,2),16), g = parseInt(c.slice(2,4),16), b = parseInt(c.slice(4,6),16);
+  return (0.299*r + 0.587*g + 0.114*b)/255 > 0.6 ? '#1a1a1a' : '#ffffff';
+}
+Shapes.badge = {
+  bbox(s){ return { x:s.x-s.r, y:s.y-s.r, w:s.r*2, h:s.r*2 }; },
+  draw(ctx, s){
+    const st = styleOf(s);
+    const label = badgeLabel(s.n, s.seq);
+    ctx.save();
+    ctx.globalAlpha = st.opacity;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fillStyle = st.stroke;          // 丸の色。文字色は地の明るさから決めるので指定は1色でよい
+    ctx.fill();
+    let fs = s.r*1.15;
+    ctx.font = `600 ${fs}px -apple-system,sans-serif`;
+    const maxW = s.r*1.55;              // AA や 12 のような長い表示は丸に収まるまで縮める
+    const w = ctx.measureText(label).width;
+    if(w > maxW) ctx.font = `600 ${fs*maxW/w}px -apple-system,sans-serif`;
+    ctx.fillStyle = readableOn(st.stroke);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, s.x, s.y + s.r*0.04);
+    ctx.restore();
+  },
+  hit(s, p, tol){ return Math.hypot(p.x-s.x, p.y-s.y) <= s.r + tol; },
+  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
+  anchor: s => ({ x:s.x, y:s.y }),      // 中心をグリッドに合わせる
+  handles(s){
+    const {x,y,r} = s;
+    return [ {id:'nw',x:x-r,y:y-r},{id:'ne',x:x+r,y:y-r},{id:'se',x:x+r,y:y+r},{id:'sw',x:x-r,y:y+r} ];
+  },
+  // 丸なので中心を固定したまま半径だけ変える（掴んだ角がそのまま外接する箱の角になる）
+  dragHandle(s, id, p){
+    s.r = clamp(Math.max(Math.abs(p.x-s.x), Math.abs(p.y-s.y)), BADGE_MIN_R, BADGE_MAX_R);
   },
 };
 
@@ -1630,6 +1733,7 @@ const ICON = {
   hline: '<path d="M2 9h14M5 6.5v5M13 6.5v5"/>',
   rect:  '<rect x="3" y="4.5" width="12" height="9" rx="1"/>',
   text:  '<path d="M4 4h10M9 4v11M6.5 15h5"/>',
+  badge: '<circle cx="9" cy="9" r="6.2"/><path d="M7.6 7.4L9.3 6.2v5.6"/>',
   fib:   '<path d="M2 4h14M2 7.6h14M2 11.2h14M2 14.8h14"/>',
 };
 const TOOLS = [
@@ -1646,6 +1750,7 @@ const TOOLS = [
   { id:'hline',  key:'⇧L',label:'水平ライン' },
   { id:'rect',   key:'R', label:'矩形ゾーン' },
   { id:'text',   key:'T', label:'テキスト' },
+  { id:'badge',  key:'N', label:'番号バッジ（クリックのたびに 1,2,3… / A,B,C…）' },
   { id:'fib',    key:'F', label:'フィボナッチ' },
 ];
 
@@ -1670,7 +1775,7 @@ function setTool(id){
   if(id !== 'select') ui.selection.clear();
   syncUI(); requestRender(); updateCursor();
 }
-const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','fib']);
+const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','badge','fib']);
 /** ハンドルの形状ごとに適切なリサイズカーソルを返す（7.3）。
  *  candle の O/H/L/C・hline の p は価格（Y）方向にしか動かないので ns-resize。
  *  rect の四隅は対角方向なので nwse-resize / nesw-resize を使い分ける。
@@ -1685,6 +1790,8 @@ function handleCursor(s, id){
       return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
     case 'line': case 'arrow': case 'fib': case 'polyline':
       return 'move';
+    case 'badge':
+      return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
     case 'text':
       if(id==='rot') return 'grab';
       if(id==='n' || id==='s') return 'ns-resize';
@@ -1837,6 +1944,16 @@ cv.addEventListener('pointerdown', e=>{
     act(()=>{ board.objects.push(s); });
     ui.selection = new Set([s.id]);
     setTool('select');
+    return;
+  }
+
+  // --- 番号バッジ: クリックで置いて、次の値へ 1 つ進む。
+  //     ツールは選択したままにして連続で置けるようにし、右パネルの「次の値」も出したままにする ---
+  if(ui.tool==='badge'){
+    const b = makeBadge(snapV(wp.x,'x'), snapV(wp.y,'y'));
+    act(()=>{ board.objects.push(b); });
+    if(ui.badgeNext != null) ui.badgeNext++;   // 手動指定中のときだけ進める（既定は板から導出）
+    syncUI(); requestRender();
     return;
   }
 
@@ -2129,7 +2246,7 @@ window.addEventListener('keydown', e=>{
     if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
     if(e.shiftKey && k.toUpperCase()==='C'){ setTool('candlepath'); return; }
     if(!e.shiftKey){
-      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', f:'fib' };
+      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', n:'badge', f:'fib' };
       const t = map[k.toLowerCase()];
       if(t){ setTool(t); return; }
     }
@@ -2456,6 +2573,7 @@ const INSPECTORS = {
   hline: buildHLineInspector,
   pen: buildPenInspector,
   text: buildTextInspector,
+  badge: buildBadgeInspector,
   fib: buildFibInspector,
 };
 function buildInspector(){
@@ -2478,8 +2596,82 @@ function buildInspector(){
     });
     ins.appendChild(b2);
   } else {
+    if(ui.tool === 'badge') buildBadgeToolSection(ins);
     buildBoardInspector(ins);
   }
+}
+
+/** 番号バッジの系列と「次の値」。バッジツール選択中に右パネルの先頭へ出す */
+function buildBadgeToolSection(ins){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='番号バッジ';
+  sec.appendChild(h);
+  const seq = currentBadgeSeq();
+
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='種類';
+  const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.gap='4px';
+  for(const [id, label] of [['123','1,2,3'],['ABC','A,B,C'],['abc','a,b,c']]){
+    const bt = document.createElement('button'); bt.className='tb-btn'+(seq===id?' on':'');
+    bt.textContent = label;
+    bt.onclick = ()=>{ setBadgeSeq(id); syncUI(); };
+    wrap.appendChild(bt);
+  }
+  row.append(l, wrap); sec.appendChild(row);
+
+  const nrow = document.createElement('div'); nrow.className='row';
+  const nl2 = document.createElement('label'); nl2.textContent='次の値';
+  const ni = document.createElement('input'); ni.type='text'; ni.value = badgeLabel(nextBadgeN(), seq);
+  ni.onchange = ()=>{
+    const v = parseBadgeLabel(ni.value, seq);
+    if(v != null) ui.badgeNext = v;
+    syncUI();
+  };
+  nrow.append(nl2, ni); sec.appendChild(nrow);
+
+  const reset = document.createElement('button'); reset.className='btn-full';
+  reset.textContent = seq==='123' ? '1 に戻す' : (seq==='abc' ? 'a に戻す' : 'A に戻す');
+  reset.onclick = ()=>{ ui.badgeNext = 1; syncUI(); };
+  sec.appendChild(reset);
+
+  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
+  hint.innerHTML = 'クリックするたびに 1 つ進みます<br>途中を削除しても番号は詰めません（次は最大＋1）';
+  sec.appendChild(hint);
+  ins.appendChild(sec);
+}
+
+function buildBadgeInspector(ins, s){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='番号バッジ';
+  sec.appendChild(h);
+  const st = s.style = s.style || {...DEFAULT_STYLE};
+  sec.appendChild(color('色', st.stroke, v=>{ st.stroke=v; }, true));
+  sec.appendChild(num('大きさ（半径）', s.r, v=>act(()=>{ s.r = clamp(v||BADGE_DEFAULT_R, BADGE_MIN_R, BADGE_MAX_R); }), 1));
+
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent='表示';
+  const i = document.createElement('input'); i.type='text'; i.value = badgeLabel(s.n, s.seq);
+  i.onchange = ()=>{
+    const v = parseBadgeLabel(i.value, s.seq);
+    if(v != null) act(()=>{ s.n = v; }); else syncUI();
+  };
+  row.append(l, i); sec.appendChild(row);
+
+  const srow = document.createElement('div'); srow.className='row';
+  const sl = document.createElement('label'); sl.textContent='種類';
+  const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.gap='4px';
+  for(const [id, label] of [['123','1,2,3'],['ABC','A,B,C'],['abc','a,b,c']]){
+    const bt = document.createElement('button'); bt.className='tb-btn'+((s.seq||'123')===id?' on':'');
+    bt.textContent = label;
+    bt.onclick = ()=>act(()=>{ s.seq = id; });
+    wrap.appendChild(bt);
+  }
+  srow.append(sl, wrap); sec.appendChild(srow);
+
+  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
+  hint.textContent = '四隅のハンドルでも大きさを変えられます';
+  sec.appendChild(hint);
+  ins.appendChild(sec);
 }
 
 function buildCandleInspector(ins, k){
