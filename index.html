@@ -289,6 +289,8 @@ body{
     <tr><td class="k">Shift（直線/矢印/折れ線の端点ドラッグ中）</td><td>45度刻み（水平・垂直含む）に角度スナップ</td></tr>
     <tr><td class="k">Shift（フィボナッチの端点ドラッグ中）</td><td>価格（Y）を固定し水平方向にのみ移動</td></tr>
     <tr><td class="k">Shift（矩形ゾーンの作成/角ハンドルドラッグ中）</td><td>正方形に制約</td></tr>
+    <tr><td class="k">テキストの四隅ハンドル</td><td>ドラッグで拡大縮小（対角のコーナーを固定）</td></tr>
+    <tr><td class="k">テキストの上のハンドル</td><td>ドラッグで回転（Shift で 15 度刻み）</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
     <tr><td class="grp" colspan="2">ボード / データ</td></tr>
@@ -465,7 +467,9 @@ function pruneSelection(){
      move(s, dx, dy)          -> ワールド差分で移動
      anchor(s)                -> {x,y}  移動スナップでグリッド線に合わせる基準点
      handles(s)               -> [{id,x,y}]  ワールド座標（選択中のみ表示）
+                                 kind:'rot' と from:{x,y} を添えると回転ノブとして描く
      dragHandle(s, id, wpt)   -> ハンドルドラッグ処理
+     outline(s)               -> [{x,y}]  選択枠の多角形（省略時は bbox の矩形）
    ========================================================================== */
 const Shapes = {};
 
@@ -928,36 +932,119 @@ Shapes.pen = {
   // handles なし（フリーハンドのため部分編集はサポートしない。全体移動のみ）
 };
 
-/* ---------- テキスト ---------- */
-function makeText(x,y){ return withLastParams('text', { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', style:{...DEFAULT_STYLE} }); }
+/* ---------- テキスト（ラベル） --------------------------------------------
+   s.x,s.y は「回転前の箱」の左上、s.rot は箱の中心まわりの回転角（度・時計回り）。
+   箱の大きさは fontSize と中身から決まるので、四隅のハンドルは幅を変えるのではなく
+   fontSize を変える（＝相似に拡大縮小する）。上辺の外に回転ハンドルを1つ置く。
+
+   回転が入ると「ワールド座標の箱」では当たり判定も枠描画もできなくなるので、
+   textToLocal()/textToWorld() で回転前の座標系に出入りする形に統一してある。
+   bbox() は回転後の四隅を包む軸平行の箱を返す（範囲選択やフィットのため）。
+   ------------------------------------------------------------------------ */
+function makeText(x,y){ return withLastParams('text', { id:uid(), type:'text', x, y, text:'', fontSize:16, align:'left', rot:0, style:{...DEFAULT_STYLE} }); }
+const TEXT_MIN_FS = 4, TEXT_MAX_FS = 400;
+const TEXT_ROT_ARM = 26;            // 回転ハンドルを上辺から離す距離（スクリーン px）
+const TEXT_ROT_SNAP = 15;           // Shift 併用時の角度スナップ（度）
+const textRot = s => (s.rot||0) * Math.PI/180;
+/** 回転を無視した素の箱。measureText のフォント指定をここに集約する */
+function textLocalBox(s){
+  const lines = (s.text||'').split('\n');
+  const fs = s.fontSize||16;
+  // 簡易計測: canvas 2D の measureText を使う（オフスクリーン ctx を共有）
+  ctx.save(); ctx.font = `${fs}px -apple-system,sans-serif`;
+  let w = 0; for(const ln of lines) w = Math.max(w, ctx.measureText(ln||' ').width);
+  ctx.restore();
+  const h = Math.max(fs*1.3, lines.length*fs*1.3);
+  return { x:s.x, y:s.y, w:Math.max(w,20), h };
+}
+/** 回転の中心（箱の中心）。s.rot に依存しないので回転中もぶれない */
+function textCenter(s){ const b = textLocalBox(s); return { x:b.x+b.w/2, y:b.y+b.h/2 }; }
+/** 回転前ローカル座標 -> ワールド座標 */
+function textToWorld(s, lx, ly){
+  const c = textCenter(s), a = textRot(s), cos = Math.cos(a), sin = Math.sin(a);
+  const dx = lx-c.x, dy = ly-c.y;
+  return { x: c.x + dx*cos - dy*sin, y: c.y + dx*sin + dy*cos };
+}
+/** ワールド座標 -> 回転前ローカル座標（textToWorld の逆変換） */
+function textToLocal(s, wx, wy){
+  const c = textCenter(s), a = -textRot(s), cos = Math.cos(a), sin = Math.sin(a);
+  const dx = wx-c.x, dy = wy-c.y;
+  return { x: c.x + dx*cos - dy*sin, y: c.y + dx*sin + dy*cos };
+}
+/** 回転後の四隅（ワールド）。左上から時計回り */
+function textCorners(s){
+  const b = textLocalBox(s);
+  return [[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]]
+    .map(([lx,ly]) => textToWorld(s, lx, ly));
+}
 Shapes.text = {
   bbox(s){
-    const lines = (s.text||'').split('\n');
-    const fs = s.fontSize||16;
-    // 簡易計測: canvas 2D の measureText を使う（オフスクリーン ctx を共有）
-    ctx.save(); ctx.font = `${fs}px -apple-system,sans-serif`;
-    let w = 0; for(const ln of lines) w = Math.max(w, ctx.measureText(ln||' ').width);
-    ctx.restore();
-    const h = Math.max(fs*1.3, lines.length*fs*1.3);
-    return { x:s.x, y:s.y, w:Math.max(w,20), h };
+    if(!s.rot) return textLocalBox(s);
+    let x1=Infinity, y1=Infinity, x2=-Infinity, y2=-Infinity;
+    for(const q of textCorners(s)){
+      if(q.x<x1) x1=q.x; if(q.x>x2) x2=q.x;
+      if(q.y<y1) y1=q.y; if(q.y>y2) y2=q.y;
+    }
+    return { x:x1, y:y1, w:x2-x1, h:y2-y1 };
   },
   draw(ctx, s){
     if(ui.editing && ui.editing.id===s.id) return;   // 編集中は overlay 側に表示を任せる
     const st = styleOf(s);
+    const b = textLocalBox(s);
     ctx.save();
+    if(s.rot){ const c = { x:b.x+b.w/2, y:b.y+b.h/2 }; ctx.translate(c.x,c.y); ctx.rotate(textRot(s)); ctx.translate(-c.x,-c.y); }
     ctx.globalAlpha = st.opacity;
     ctx.fillStyle = st.stroke;
     ctx.font = `${s.fontSize||16}px -apple-system,sans-serif`;
     ctx.textBaseline = 'top';
     ctx.textAlign = s.align||'left';
-    const b = Shapes.text.bbox(s);
     const ax = s.align==='center' ? s.x+b.w/2 : s.align==='right' ? s.x+b.w : s.x;
     wrapText(ctx, s.text||'', ax, s.y, 100000, (s.fontSize||16)*1.3);
     ctx.restore();
   },
-  hit(s, p, tol){ const b=Shapes.text.bbox(s); return p.x>=b.x-tol && p.x<=b.x+b.w+tol && p.y>=b.y-tol && p.y<=b.y+b.h+tol; },
+  hit(s, p, tol){
+    const b = textLocalBox(s), q = textToLocal(s, p.x, p.y);
+    return q.x>=b.x-tol && q.x<=b.x+b.w+tol && q.y>=b.y-tol && q.y<=b.y+b.h+tol;
+  },
   move(s, dx, dy){ s.x+=dx; s.y+=dy; },
   anchor: s => ({ x:s.x, y:s.y }),
+  outline: s => textCorners(s),
+  handles(s){
+    const b = textLocalBox(s), c = textCorners(s);
+    // 回転ハンドルは上辺の中央から外へ。腕の長さはズームで割ってスクリーン上一定に見せる
+    const top = textToWorld(s, b.x+b.w/2, b.y);
+    const arm = textToWorld(s, b.x+b.w/2, b.y - TEXT_ROT_ARM/cam().zoom);
+    return [ {id:'nw',...c[0]}, {id:'ne',...c[1]}, {id:'se',...c[2]}, {id:'sw',...c[3]},
+             {id:'rot', x:arm.x, y:arm.y, kind:'rot', from:top} ];
+  },
+  dragHandle(s, id, p, ev){
+    const c = textCenter(s);
+    if(id === 'rot'){
+      // ハンドルは上辺側（ローカルで -y 方向）にあるので、角度に 90 度足して真上を 0 度にする
+      let deg = Math.atan2(p.y-c.y, p.x-c.x)*180/Math.PI + 90;
+      if(ev && ev.shiftKey) deg = Math.round(deg/TEXT_ROT_SNAP)*TEXT_ROT_SNAP;
+      s.rot = ((deg % 360) + 360) % 360;
+      return;
+    }
+    // 四隅: 対角のコーナーをワールド上に固定したまま fontSize だけ変える（相似拡大縮小）
+    const b = textLocalBox(s);
+    const fx = id.includes('e') ? 0 : 1, fy = id.includes('s') ? 0 : 1;   // 固定するのは対角側
+    const fixL = { x: b.x + fx*b.w, y: b.y + fy*b.h };
+    const fixW = textToWorld(s, fixL.x, fixL.y);
+    const dragL = { x: b.x + (1-fx)*b.w, y: b.y + (1-fy)*b.h };
+    // 倍率は対角ベクトルへの射影で決める。回転していても掴んだ向きに素直に効く
+    const q = textToLocal(s, p.x, p.y);
+    const vx = dragL.x-fixL.x, vy = dragL.y-fixL.y;
+    const den = vx*vx + vy*vy;
+    const k = den ? ((q.x-fixL.x)*vx + (q.y-fixL.y)*vy)/den : 1;
+    s.fontSize = Math.round(clamp((s.fontSize||16)*k, TEXT_MIN_FS, TEXT_MAX_FS)*10)/10;
+    // 新しい大きさで固定コーナーが元の位置に戻るよう左上を置き直す
+    const nb = textLocalBox(s);
+    const a = textRot(s), cos = Math.cos(a), sin = Math.sin(a);
+    const ox = (fx-0.5)*nb.w, oy = (fy-0.5)*nb.h;
+    s.x = fixW.x - nb.w/2 - (ox*cos - oy*sin);
+    s.y = fixW.y - nb.h/2 - (ox*sin + oy*cos);
+  },
 };
 
 /* ---------- 付箋 ---------- */
@@ -1258,14 +1345,36 @@ function drawPolylineInProgress(){
   ctx.restore();
 }
 
+/** 選択枠/ホバー枠をスクリーン空間でなぞる。outline() を持つ型（回転するテキスト）は
+ *  その多角形を、持たない型は bbox の矩形を描く。pad はスクリーン px の余白。 */
+function strokeOutline(s, pad){
+  const f = def(s).outline;
+  if(!f){
+    const b = bboxOf(s), p = w2s(b.x,b.y), z = cam().zoom;
+    ctx.strokeRect(p.x-pad, p.y-pad, b.w*z+pad*2, b.h*z+pad*2);
+    return;
+  }
+  const pts = f(s).map(q => w2s(q.x,q.y));
+  let cx=0, cy=0;
+  for(const q of pts){ cx+=q.x; cy+=q.y; }
+  cx/=pts.length; cy/=pts.length;
+  ctx.beginPath();
+  pts.forEach((q,i)=>{                       // 中心から外向きに広げるので回転しても余白が一定に見える
+    const d = Math.hypot(q.x-cx, q.y-cy) || 1;
+    const x = q.x + (q.x-cx)/d*pad, y = q.y + (q.y-cy)/d*pad;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  });
+  ctx.closePath();
+  ctx.stroke();
+}
+
 function drawHover(){
   if(!ui.hoverId || ui.selection.has(ui.hoverId) || ui.drag) return;
   const s = byId(ui.hoverId); if(!s) return;
-  const b = bboxOf(s), p = w2s(b.x,b.y), z = cam().zoom;
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.strokeStyle = 'rgba(76,141,255,.45)';
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(p.x-3, p.y-3, b.w*z+6, b.h*z+6);
+  strokeOutline(s, 3);
 }
 
 const HANDLE_R = 4.5;   // 見た目の半径（スクリーン px）
@@ -1279,10 +1388,7 @@ function drawSelection(){
   ctx.strokeStyle = 'rgba(76,141,255,.85)';
   ctx.lineWidth = 1.25;
   ctx.setLineDash([4,3]);
-  for(const s of sel){
-    const b = bboxOf(s), p = w2s(b.x,b.y);
-    ctx.strokeRect(p.x-3, p.y-3, b.w*z+6, b.h*z+6);
-  }
+  for(const s of sel) strokeOutline(s, 3);
   ctx.setLineDash([]);
 
   // ハンドルは単一選択時のみ（スクリーン空間で固定サイズ）
@@ -1298,6 +1404,13 @@ function drawSelection(){
     ctx.fillStyle = active ? '#4c8dff' : '#ffffff';
     ctx.strokeStyle = '#4c8dff';
     ctx.lineWidth = 1.5;
+    if(hd.kind === 'rot'){          // 回転ノブ: 本体から腕を伸ばした丸。四隅の四角と見分けが付く
+      const a = w2s(hd.from.x, hd.from.y);
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, HANDLE_R+0.5, 0, Math.PI*2);
+      ctx.fill(); ctx.stroke();
+      continue;
+    }
     ctx.beginPath();
     ctx.rect(p.x-HANDLE_R, p.y-HANDLE_R, HANDLE_R*2, HANDLE_R*2);
     ctx.fill(); ctx.stroke();
@@ -1424,6 +1537,10 @@ function positionEditDiv(div, s){
     div.style.color = styleOf(s).stroke;
     div.style.minWidth = '20px';
     div.style.textAlign = s.align || 'left';
+    // 回転はキャンバス側と揃えて箱の中心まわり。div の実寸と measureText の箱は
+    // 完全一致しないが、中心基準にしておけばズレは見た目に出ない程度に収まる
+    div.style.transformOrigin = '50% 50%';
+    div.style.transform = s.rot ? `rotate(${s.rot}deg)` : '';
   } else { // note
     div.style.left = p.x + 'px';
     div.style.top = p.y + 'px';
@@ -1549,6 +1666,8 @@ function handleCursor(s, id){
       return (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
     case 'line': case 'arrow': case 'fib': case 'polyline':
       return 'move';
+    case 'text':
+      return id==='rot' ? 'grab' : (id==='nw' || id==='se') ? 'nwse-resize' : 'nesw-resize';
     default:
       return 'ns-resize';
   }
@@ -2500,7 +2619,8 @@ function buildTextInspector(ins, s){
   const sec = document.createElement('div'); sec.className='ins-sec';
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='テキスト';
   sec.appendChild(h);
-  sec.appendChild(num('フォントサイズ', s.fontSize||16, v=>act(()=>{ s.fontSize=clamp(v,8,120); }), 1));
+  sec.appendChild(num('フォントサイズ', s.fontSize||16, v=>act(()=>{ s.fontSize=clamp(v,TEXT_MIN_FS,TEXT_MAX_FS); }), 1));
+  sec.appendChild(num('角度（度）', Math.round(s.rot||0), v=>act(()=>{ s.rot = ((v%360)+360)%360; }), 1));
   const st = s.style = s.style || {...DEFAULT_STYLE};
   sec.appendChild(color('文字色', st.stroke, v=>{ st.stroke=v; }));
 
@@ -2516,7 +2636,7 @@ function buildTextInspector(ins, s){
   row.append(l,wrap); sec.appendChild(row);
 
   const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
-  hint.textContent = 'ダブルクリックで再編集';
+  hint.textContent = 'ダブルクリックで再編集 / 四隅で拡大縮小・上のハンドルで回転（Shift で15度ずつ）';
   sec.appendChild(hint);
   ins.appendChild(sec);
 }
