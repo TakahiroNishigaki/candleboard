@@ -6,7 +6,7 @@
 <title>CandleBoard</title>
 <style>
 /* ============================================================
-   CandleBoard — 手描きローソク足チャート付箋ボード
+   CandleBoard — 手描きローソク足チャートボード
    骨組み / camera / グリッド / パン・ズーム / 描画ループ
    Candle オブジェクト / 選択・移動・削除・コピペ / Undo・Redo / 重ね順
    描画ツール群 / フィボナッチ / 永続化・複数ボード・JSON入出力
@@ -110,7 +110,6 @@ body{
 .shape-edit.text-edit{
   background:rgba(20,23,28,.35);border:1px dashed rgba(76,141,255,.6);border-radius:3px;padding:1px 3px;
 }
-.shape-edit.note-edit{border:1px dashed rgba(0,0,0,.35);border-radius:10px}
 
 /* ---- 右インスペクタ ---- */
 #inspector{
@@ -256,7 +255,6 @@ body{
     <tr><td class="k">Shift + L</td><td>水平ライン</td></tr>
     <tr><td class="k">R</td><td>矩形ゾーン</td></tr>
     <tr><td class="k">T</td><td>テキスト</td></tr>
-    <tr><td class="k">N</td><td>付箋</td></tr>
     <tr><td class="k">F</td><td>フィボナッチ・リトレースメント</td></tr>
     <tr><td class="grp" colspan="2">ビュー</td></tr>
     <tr><td class="k">ホイール</td><td>上下パン</td></tr>
@@ -402,7 +400,7 @@ const ui = {
   drag: null,          // { mode, ... }
   mouseWorld: {x:0,y:0},
   clipboard: [],
-  editing: null,       // { id, div } — text/note の contenteditable 編集中はここに入る
+  editing: null,       // { id, div } — text の contenteditable 編集中はここに入る
   lastParams: {},      // 型ごとの「直近に編集されたスタイル的パラメータ」。新規作成時の初期値に使う
   poly: null,          // { pts:[x,y,...], cursor:{x,y} } — 折れ線の作図中。ui.drag と違いクリックをまたいで残る
 };
@@ -605,7 +603,6 @@ const CARRY_PARAMS = {
   pen:   ['style'],
   text:  ['style','fontSize','align'],
   fib:   ['style','levels','extend','showPrice'],
-  note:  ['bg'],
 };
 /** 1オブジェクト分を記憶する。記憶したら true を返す（呼び出し側が1回だけ保存できるように） */
 function rememberLastParams(s){
@@ -675,16 +672,6 @@ function drawArrowHead(ctx, tipX, tipY, dirAng, size){
   ctx.closePath();
   ctx.fill();
 }
-function roundRectPath(ctx,x,y,w,h,r){
-  r = Math.max(0, Math.min(r, Math.abs(w)/2, Math.abs(h)/2));
-  ctx.beginPath();
-  ctx.moveTo(x+r,y);
-  ctx.arcTo(x+w,y,x+w,y+h,r);
-  ctx.arcTo(x+w,y+h,x,y+h,r);
-  ctx.arcTo(x,y+h,x,y,r);
-  ctx.arcTo(x,y,x+w,y,r);
-  ctx.closePath();
-}
 /** 文字単位で折り返す（分かち書きのない日本語でも自然に改行される） */
 /** maxWidth に収まるよう1文字ずつ詰めて行に分ける（日本語も折れるよう単語単位ではなく文字単位）。
  *  描画と採寸で同じ結果を使いたいので関数に切り出してある。ctx.font は呼び出し側で設定しておくこと。 */
@@ -718,13 +705,6 @@ function penBBox(pts){
   }
   if(!isFinite(x0)) return {x:0,y:0,w:0,h:0};
   return {x:x0,y:y0,w:x1-x0,h:y1-y0};
-}
-const NOTE_COLORS = ['#f6d365','#84fab0','#a6c1ee','#fbc2eb','#fda085','#c2c2c2'];
-function noteTextColor(bg){
-  const c = (bg||'#f6d365').replace('#','');
-  const r=parseInt(c.slice(0,2),16), g=parseInt(c.slice(2,4),16), b=parseInt(c.slice(4,6),16);
-  const lum = (0.299*r+0.587*g+0.114*b)/255;
-  return lum > 0.6 ? '#1a1a1a' : '#ffffff';
 }
 
 /* ---------- Line ---------- */
@@ -1108,39 +1088,6 @@ Shapes.text = {
   },
 };
 
-/* ---------- 付箋 ---------- */
-function makeNote(x,y,w,h){ return withLastParams('note', { id:uid(), type:'note', x, y, w, h, text:'', bg:NOTE_COLORS[0] }); }
-Shapes.note = {
-  bbox(s){ return { x:s.x, y:s.y, w:s.w, h:s.h }; },
-  draw(ctx, s){
-    if(ui.editing && ui.editing.id===s.id) return;
-    ctx.save();
-    roundRectPath(ctx, s.x, s.y, s.w, s.h, 10);
-    ctx.fillStyle = s.bg || NOTE_COLORS[0];
-    ctx.fill();
-    ctx.clip();
-    ctx.fillStyle = noteTextColor(s.bg);
-    ctx.font = '13px -apple-system,sans-serif';
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';   // 明示しておく（他描画からの ctx 状態漏れに対する保険）
-    wrapText(ctx, s.text||'', s.x+8, s.y+8, s.w-16, 17);
-    ctx.restore();
-  },
-  hit(s, p, tol){ return p.x>=s.x-tol && p.x<=s.x+s.w+tol && p.y>=s.y-tol && p.y<=s.y+s.h+tol; },
-  move(s, dx, dy){ s.x+=dx; s.y+=dy; },
-  anchor: s => ({ x:s.x, y:s.y }),
-  handles(s){ const {x,y,w,h}=s; return [ {id:'nw',x,y},{id:'ne',x:x+w,y},{id:'se',x:x+w,y:y+h},{id:'sw',x,y:y+h} ]; },
-  dragHandle(s, id, p){
-    const x2=snapV(p.x,'x'), y2=snapV(p.y,'y');
-    let {x,y,w,h}=s; const right=x+w, bottom=y+h;
-    if(id.includes('w')){ const nx=Math.min(x2,right); w=right-nx; x=nx; }
-    if(id.includes('e')){ const nx=Math.max(x2,x); w=nx-x; }
-    if(id.includes('n')){ const ny=Math.min(y2,bottom); h=bottom-ny; y=ny; }
-    if(id.includes('s')){ const ny=Math.max(y2,y); h=ny-y; }
-    s.x=x; s.y=y; s.w=Math.max(w,40); s.h=Math.max(h,30);
-  },
-};
-
 /* ---------- フィボナッチ・リトレースメント ---------- */
 const FIB_STANDARD_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const FIB_EXTEND_LEVELS = [1.272, 1.618];
@@ -1310,7 +1257,7 @@ function render(){
   drawFibLabels();
   drawEmptyHint();
 
-  // text/note の編集中オーバーレイをパン・ズームに追従させる
+  // テキストの編集中オーバーレイをパン・ズームに追従させる
   if(ui.editing){
     const s = byId(ui.editing.id);
     if(s) positionEditDiv(ui.editing.div, s); else finalizeEditing();
@@ -1478,7 +1425,7 @@ function drawSelection(){
   const s = sel[0];
   if(!def(s).handles) return;
   // save/restore で囲む: textAlign/textBaseline/font をここで変更したままにすると、
-  // 次フレームの他オブジェクト描画（例: 付箋のテキスト）に漏れて位置がずれるバグになる。
+  // 次フレームの他オブジェクト描画（例: テキストの描画）に漏れて位置がずれるバグになる。
   ctx.save();
   for(const hd of def(s).handles(s)){
     const p = w2s(hd.x, hd.y);
@@ -1606,43 +1553,32 @@ function hitObject(wpt){
 }
 
 /* ==========================================================================
-   6x. テキスト編集オーバーレイ（text / note 共通）
+   6x. テキスト編集オーバーレイ
    --------------------------------------------------------------------------
    contenteditable な div をキャンバス上に絶対配置で重ねて編集する。
-   編集中は Shapes.text/note.draw() 側が描画をスキップする（ui.editing で判定）。
+   編集中は Shapes.text.draw() 側が描画をスキップする（ui.editing で判定）。
    ========================================================================== */
 function positionEditDiv(div, s){
   const p = w2s(s.x, s.y), z = cam().zoom;
-  if(s.type === 'text'){
-    div.style.left = p.x + 'px';
-    div.style.top = p.y + 'px';
-    div.style.font = `${(s.fontSize||TEXT_DEFAULT_FS)*z}px -apple-system,sans-serif`;
-    div.style.color = styleOf(s).stroke;
-    div.style.minWidth = '20px';
-    // 折り返し幅があれば同じ幅で折り返す（.shape-edit は white-space:pre-wrap なので幅指定だけで効く）
-    div.style.width = s.wrap ? (s.wrap*z)+'px' : '';
-    div.style.textAlign = s.align || 'left';
-    // 回転はキャンバス側と揃えて箱の中心まわり。div の実寸と measureText の箱は
-    // 完全一致しないが、中心基準にしておけばズレは見た目に出ない程度に収まる
-    div.style.transformOrigin = '50% 50%';
-    div.style.transform = s.rot ? `rotate(${s.rot}deg)` : '';
-  } else { // note
-    div.style.left = p.x + 'px';
-    div.style.top = p.y + 'px';
-    div.style.width = (s.w*z) + 'px';
-    div.style.height = (s.h*z) + 'px';
-    div.style.padding = '8px';
-    div.style.boxSizing = 'border-box';
-    div.style.font = `${13*z}px -apple-system,sans-serif`;
-    div.style.color = noteTextColor(s.bg);
-  }
+  div.style.left = p.x + 'px';
+  div.style.top = p.y + 'px';
+  div.style.font = `${(s.fontSize||TEXT_DEFAULT_FS)*z}px -apple-system,sans-serif`;
+  div.style.color = styleOf(s).stroke;
+  div.style.minWidth = '20px';
+  // 折り返し幅があれば同じ幅で折り返す（.shape-edit は white-space:pre-wrap なので幅指定だけで効く）
+  div.style.width = s.wrap ? (s.wrap*z)+'px' : '';
+  div.style.textAlign = s.align || 'left';
+  // 回転はキャンバス側と揃えて箱の中心まわり。div の実寸と measureText の箱は
+  // 完全一致しないが、中心基準にしておけばズレは見た目に出ない程度に収まる
+  div.style.transformOrigin = '50% 50%';
+  div.style.transform = s.rot ? `rotate(${s.rot}deg)` : '';
 }
 function startEditing(s){
   if(ui.editing) finalizeEditing();
   const div = document.createElement('div');
   div.contentEditable = 'true';
   div.spellcheck = false;
-  div.className = 'shape-edit ' + (s.type==='note' ? 'note-edit' : 'text-edit');
+  div.className = 'shape-edit text-edit';
   div.innerText = s.text || '';
   $('stage').appendChild(div);
   positionEditDiv(div, s);
@@ -1694,7 +1630,6 @@ const ICON = {
   hline: '<path d="M2 9h14M5 6.5v5M13 6.5v5"/>',
   rect:  '<rect x="3" y="4.5" width="12" height="9" rx="1"/>',
   text:  '<path d="M4 4h10M9 4v11M6.5 15h5"/>',
-  note:  '<path d="M3.5 3.5h11v7.5l-3.5 3.5h-7.5z"/><path d="M14.5 11h-3.5v3.5"/>',
   fib:   '<path d="M2 4h14M2 7.6h14M2 11.2h14M2 14.8h14"/>',
 };
 const TOOLS = [
@@ -1711,7 +1646,6 @@ const TOOLS = [
   { id:'hline',  key:'⇧L',label:'水平ライン' },
   { id:'rect',   key:'R', label:'矩形ゾーン' },
   { id:'text',   key:'T', label:'テキスト' },
-  { id:'note',   key:'N', label:'付箋' },
   { id:'fib',    key:'F', label:'フィボナッチ' },
 ];
 
@@ -1736,7 +1670,7 @@ function setTool(id){
   if(id !== 'select') ui.selection.clear();
   syncUI(); requestRender(); updateCursor();
 }
-const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','note','fib']);
+const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','fib']);
 /** ハンドルの形状ごとに適切なリサイズカーソルを返す（7.3）。
  *  candle の O/H/L/C・hline の p は価格（Y）方向にしか動かないので ns-resize。
  *  rect の四隅は対角方向なので nwse-resize / nesw-resize を使い分ける。
@@ -1781,7 +1715,7 @@ cv.addEventListener('pointerdown', e=>{
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
   ui.mouseWorld = wp;
 
-  // text/note 編集中に他所をクリックしたら、blur イベントのタイミングに依存せず確実に確定させる
+  // テキスト編集中に他所をクリックしたら、blur イベントのタイミングに依存せず確実に確定させる
   if(ui.editing) finalizeEditing();
 
   // --- パン ---
@@ -1928,25 +1862,6 @@ cv.addEventListener('pointerdown', e=>{
           s.wrap = f.w;
         }
         return s;
-      },
-    };
-    ui.drag.onMove(wp);
-    requestRender(); return;
-  }
-
-  // --- 付箋: ドラッグでサイズ指定、クリックのみならデフォルトサイズ ---
-  if(ui.tool==='note'){
-    const x0 = snapV(wp.x,'x'), y0 = snapV(wp.y,'y');
-    ui.drag = {
-      mode:'create', tool:'note', x0, y0, preview:null,
-      onMove(wp){
-        const x2=snapV(wp.x,'x'), y2=snapV(wp.y,'y');
-        const x=Math.min(this.x0,x2), y=Math.min(this.y0,y2);
-        const w=Math.abs(x2-this.x0), h=Math.abs(y2-this.y0);
-        this.preview = (w>=40 && h>=30) ? makeNote(x,y,w,h) : null;
-      },
-      commit(){
-        return this.preview || makeNote(this.x0, this.y0, 160, 120);
       },
     };
     ui.drag.onMove(wp);
@@ -2128,7 +2043,7 @@ function endDrag(){
     if(s){
       act(()=>{ board.objects.push(s); });
       ui.selection = new Set([s.id]);
-      if(s.type==='note' || s.type==='text') startEditing(s);   // 付箋/テキストは確定直後にそのまま編集へ
+      if(s.type==='text') startEditing(s);   // テキストは確定直後にそのまま編集へ
     }
     setTool('select');
   } else if(d.mode==='handle' || d.mode==='move'){
@@ -2142,7 +2057,7 @@ function endDrag(){
 cv.addEventListener('pointerup', endDrag);
 cv.addEventListener('pointercancel', endDrag);
 
-/* text / note の再編集用。既存の pointerdown/move/up 状態機械とは独立に動作し、
+/* テキストの再編集用。既存の pointerdown/move/up 状態機械とは独立に動作し、
    干渉しない（ダブルクリックは通常の 2 回の down/up が先に処理された後に発火する）。
    §0.8 の「新規グローバルリスナ禁止」の例外: ダブルクリック再編集は仕様上必須で、
    ドラッグ状態機械とは競合しないため追加している。 */
@@ -2150,7 +2065,7 @@ cv.addEventListener('dblclick', e=>{
   if(ui.tool!=='select') return;
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
   const hit = hitObject(wp);
-  if(hit && (hit.type==='text' || hit.type==='note')){
+  if(hit && hit.type==='text'){
     ui.selection = new Set([hit.id]);
     syncUI(); requestRender();
     startEditing(hit);
@@ -2214,7 +2129,7 @@ window.addEventListener('keydown', e=>{
     if(e.shiftKey && k.toUpperCase()==='L'){ setTool('hline'); return; }
     if(e.shiftKey && k.toUpperCase()==='C'){ setTool('candlepath'); return; }
     if(!e.shiftKey){
-      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', n:'note', f:'fib' };
+      const map = { v:'select', h:'hand', c:'candle', p:'pen', l:'line', g:'polyline', a:'arrow', r:'rect', t:'text', f:'fib' };
       const t = map[k.toLowerCase()];
       if(t){ setTool(t); return; }
     }
@@ -2541,7 +2456,6 @@ const INSPECTORS = {
   hline: buildHLineInspector,
   pen: buildPenInspector,
   text: buildTextInspector,
-  note: buildNoteInspector,
   fib: buildFibInspector,
 };
 function buildInspector(){
@@ -2761,25 +2675,6 @@ function buildTextInspector(ins, s){
   const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
   hint.innerHTML = 'ダブルクリックで再編集<br>四隅＝相似に拡大縮小 / 左右の辺＝折り返し幅 / 上下の辺＝文字サイズ'
     + '<br>上のハンドルで回転（Shift で15度ずつ）<br>テキストツールはドラッグで文字サイズと折り返し幅を指定';
-  sec.appendChild(hint);
-  ins.appendChild(sec);
-}
-
-function buildNoteInspector(ins, s){
-  const sec = document.createElement('div'); sec.className='ins-sec';
-  const h = document.createElement('div'); h.className='ins-h'; h.textContent='付箋';
-  sec.appendChild(h);
-  const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.gap='6px'; wrap.style.flexWrap='wrap';
-  for(const c of NOTE_COLORS){
-    const sw = document.createElement('button');
-    sw.style.width='26px'; sw.style.height='26px'; sw.style.borderRadius='6px'; sw.style.cursor='pointer';
-    sw.style.background=c; sw.style.border = (s.bg===c) ? '2px solid var(--accent)' : '1px solid var(--border)';
-    sw.onclick = ()=>act(()=>{ s.bg = c; });
-    wrap.appendChild(sw);
-  }
-  sec.appendChild(wrap);
-  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
-  hint.textContent = 'ダブルクリックで再編集';
   sec.appendChild(hint);
   ins.appendChild(sec);
 }
@@ -3065,6 +2960,9 @@ function hydrateBoard(raw){
     b.settings.snapY = legacySnap;
   }
   delete b.settings.snap;
+  // Shapes に無い型（削除した付箋や、手で編集された JSON）は描画も当たり判定もできないので落とす。
+  // 残しておくと def(o) が undefined になり、描画ループがそこで止まってボード全体が出なくなる。
+  b.objects = b.objects.filter(o => o && Shapes[o.type]);
   b.objects.forEach(o=>{ if(o.type==='candle') normalizeCandle(o); });
   return b;
 }
