@@ -24,6 +24,7 @@
   --axis:      rgba(255,255,255,.18);
   --sel:       #4c8dff;
   --hover:     rgba(76,141,255,.45);
+  --ink:       #ffffff;    /* 自動色（テーマ追従）のオブジェクトが使う前景色 */
 }
 body.light{
   --bg:        #f4f5f7;
@@ -38,6 +39,7 @@ body.light{
   --axis:      rgba(0,0,0,.22);
   --sel:       #2f6fed;
   --hover:     rgba(47,111,237,.45);
+  --ink:       #1c2127;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -296,6 +298,7 @@ body{
     <tr><td class="k">テキストの上のハンドル</td><td>ドラッグで回転（Shift で 15 度刻み）</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
+    <tr><td class="k">色欄の「自動」</td><td>テーマに合わせて白／黒を切り替える。既定値なので、ライト／ダークどちらでも見える。明示的に色を選ぶと解除される（複数選択してまとめて戻すことも可）</td></tr>
     <tr><td class="grp" colspan="2">ボード / データ</td></tr>
     <tr><td class="k">☰</td><td>ボード一覧（新規・複製・リネーム・削除）</td></tr>
     <tr><td class="k">JSON をキャンバスへドロップ</td><td>読み込み（ファイル選択ボタンも可）</td></tr>
@@ -574,8 +577,21 @@ Shapes.candle = {
 /* ==========================================================================
    4x. 共通描画スタイル / 幾何ヘルパ（Phase 4 の描画ツールが共有する）
    ========================================================================== */
-const DEFAULT_STYLE = { stroke:'#ffffff', width:1, opacity:1, dash:false, fill:'#ffffff', fillOpacity:.15 };
-const styleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
+/* 色の初期値は具体的な色ではなく「自動（テーマ追従）」にしてある。
+   ダーク/ライトを切り替えたときに背景と同化して見えなくなるのを防ぐための仕組みで、
+   描画の直前に themeColors.ink（ダーク=白 / ライト=ほぼ黒）へ解決する。
+   ユーザーが明示的に選んだ色はそのまま尊重し、勝手に反転させたりはしない。 */
+const AUTO_COLOR = 'auto';
+const DEFAULT_STYLE = { stroke:AUTO_COLOR, width:1, opacity:1, dash:false, fill:AUTO_COLOR, fillOpacity:.15 };
+/** 保存されている値そのもの（'auto' を含む）。インスペクタなど「設定値」を見たい側が使う */
+const rawStyleOf = s => Object.assign({}, DEFAULT_STYLE, s.style||{});
+/** 描画用。'auto' を現在のテーマの前景色に解決して返す */
+function styleOf(s){
+  const st = rawStyleOf(s);
+  if(st.stroke === AUTO_COLOR) st.stroke = themeColors.ink;
+  if(st.fill   === AUTO_COLOR) st.fill   = themeColors.ink;
+  return st;
+}
 
 /** 型ごとに「直近に編集されたスタイル的パラメータ」を引き継ぐ仕組み。
  *  位置・サイズなどのジオメトリは対象外（ドラッグのたびにユーザーが指定するため）。
@@ -1254,7 +1270,7 @@ new ResizeObserver(resizeCanvas).observe($('stage'));
 /** 現テーマの CSS カラー変数。render() の先頭で 1 フレームにつき 1 回だけ読み直す
  *  （getComputedStyle は毎回呼ぶとやや重いので、drawGrid() 等の毎フレーム呼び出しからは
  *   このキャッシュを読むだけにする）。ライト/ダークどちらの色もここ経由で反映される。 */
-let themeColors = { bg:'#14171c', grid1:'rgba(255,255,255,.05)', grid2:'rgba(255,255,255,.10)', axis:'rgba(255,255,255,.18)' };
+let themeColors = { bg:'#14171c', grid1:'rgba(255,255,255,.05)', grid2:'rgba(255,255,255,.10)', axis:'rgba(255,255,255,.18)', ink:'#ffffff' };
 function refreshThemeColors(){
   const cs = getComputedStyle(document.body);
   themeColors = {
@@ -1262,6 +1278,7 @@ function refreshThemeColors(){
     grid1: cs.getPropertyValue('--grid-1').trim() || themeColors.grid1,
     grid2: cs.getPropertyValue('--grid-2').trim() || themeColors.grid2,
     axis:  cs.getPropertyValue('--axis').trim()   || themeColors.axis,
+    ink:   cs.getPropertyValue('--ink').trim()    || themeColors.ink,
   };
 }
 
@@ -2471,10 +2488,14 @@ function num(label, value, onChange, step){
   i.onchange = ()=>onChange(parseFloat(i.value));
   row.append(l,i); return row;
 }
-function color(label, value, onChange){
+/** 色の行。autoOk を渡すと「自動（テーマ追従）」に切り替えるボタンが付く */
+function color(label, value, onChange, autoOk){
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent=label;
-  const i = document.createElement('input'); i.type='color'; i.value=value;
+  const isAuto = value === AUTO_COLOR;
+  const i = document.createElement('input'); i.type='color';
+  // 自動のときは今のテーマでの実際の色を見せる（<input type=color> は 'auto' を解釈できない）
+  i.value = isAuto ? themeColors.ink : value;
   // ネイティブの色ピッカーはドラッグ中 'input' を連続発火し、'change' はピッカーを閉じた時に来る。
   // ここで act() のようにインスペクタを毎回作り直すと、操作中の <input> 自体がDOMから消えて
   // ピッカーが即座に閉じてしまうため、DOM を作り直す syncUI() は 'change' まで遅らせる。
@@ -2497,7 +2518,17 @@ function color(label, value, onChange){
   };
   // 'change' が来ないまま入力欄を離れた場合の保険（保留中の変更を確実に Undo 履歴へ確定させる）
   i.onblur = ()=>{ if(pendingUndo !== null){ commitAction(); requestRender(); syncUI(); } };
-  row.append(l,i); return row;
+  row.append(l,i);
+  if(autoOk){
+    // ピッカーで色を選べば onChange に具体的な色が入るので、自動は自然に解除される
+    const bt = document.createElement('button');
+    bt.className = 'tb-btn' + (isAuto ? ' on' : '');
+    bt.textContent = '自動';
+    bt.title = 'テーマに合わせて白／黒を切り替える（ライトでもダークでも見えるようにする）';
+    bt.onclick = ()=>act(()=>onChange(isAuto ? i.value : AUTO_COLOR));
+    row.appendChild(bt);
+  }
+  return row;
 }
 
 const INSPECTORS = {
@@ -2580,7 +2611,7 @@ function buildStyleSection(ins, s){
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='スタイル';
   sec.appendChild(h);
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('線色', st.stroke, v=>{ st.stroke=v; }));
+  sec.appendChild(color('線色', st.stroke, v=>{ st.stroke=v; }, true));
   sec.appendChild(num('線幅', st.width, v=>act(()=>{ st.width=clamp(v,0.5,20); }), 0.5));
 
   const opRow = document.createElement('div'); opRow.className='row';
@@ -2605,12 +2636,12 @@ function buildMultiStyleSection(ins, sel){
   const sec = document.createElement('div'); sec.className='ins-sec';
   const h = document.createElement('div'); h.className='ins-h'; h.textContent=`スタイル一括変更（${styled.length}件）`;
   sec.appendChild(h);
-  const first = styleOf(styled[0]);
+  const first = rawStyleOf(styled[0]);
   const ensureStyle = s => { s.style = s.style || {...DEFAULT_STYLE}; return s.style; };
 
   sec.appendChild(color('線色', first.stroke, v=>{
     styled.forEach(s=>{ ensureStyle(s).stroke = v; });
-  }));
+  }, true));
   sec.appendChild(num('線幅', first.width, v=>act(()=>{
     const cv = clamp(v,0.5,20); styled.forEach(s=>{ ensureStyle(s).width = cv; });
   }), 0.5));
@@ -2659,7 +2690,7 @@ function buildRectInspector(ins, s){
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='矩形ゾーン';
   sec.appendChild(h);
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('塗り色', st.fill, v=>{ st.fill=v; }));
+  sec.appendChild(color('塗り色', st.fill, v=>{ st.fill=v; }, true));
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent='塗り不透明度';
   const i = document.createElement('input'); i.type='number'; i.min=0; i.max=1; i.step=0.05; i.value=st.fillOpacity;
@@ -2713,7 +2744,7 @@ function buildTextInspector(ins, s){
   sec.appendChild(num('角度（度）', Math.round(s.rot||0), v=>act(()=>{ s.rot = ((v%360)+360)%360; }), 1));
   sec.appendChild(num('折り返し幅（0で無効）', Math.round(s.wrap||0), v=>act(()=>{ s.wrap = Math.max(0, v||0); }), 1));
   const st = s.style = s.style || {...DEFAULT_STYLE};
-  sec.appendChild(color('文字色', st.stroke, v=>{ st.stroke=v; }));
+  sec.appendChild(color('文字色', st.stroke, v=>{ st.stroke=v; }, true));
 
   const row = document.createElement('div'); row.className='row';
   const l = document.createElement('label'); l.textContent='揃え';
