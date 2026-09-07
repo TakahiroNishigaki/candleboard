@@ -334,6 +334,7 @@ body{
     <tr><td class="k">テキストの左右の辺ハンドル</td><td>折り返し幅だけを変える（文字サイズはそのまま）</td></tr>
     <tr><td class="k">テキストの上下の辺ハンドル</td><td>文字サイズだけを変える（折り返し幅はそのまま）</td></tr>
     <tr><td class="k">テキストの上のハンドル</td><td>ドラッグで回転（Shift で 15 度刻み）</td></tr>
+    <tr><td class="k">作図ツール</td><td>描いた後もツールは持ち替えない（同じものを続けて描ける）</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
     <tr><td class="k">色欄の「自動」</td><td>テーマに合わせて白／黒を切り替える。既定値なので、ライト／ダークどちらでも見える。明示的に色を選ぶと解除される（複数選択してまとめて戻すことも可）</td></tr>
@@ -1563,7 +1564,7 @@ function drawSelection(){
   ctx.setLineDash([]);
 
   // ハンドルは単一選択時のみ（スクリーン空間で固定サイズ）
-  if(sel.length !== 1) return;
+  if(sel.length !== 1 || !handlesActive()) return;
   const s = sel[0];
   if(!def(s).handles) return;
   // save/restore で囲む: textAlign/textBaseline/font をここで変更したままにすると、
@@ -1671,8 +1672,12 @@ function drawFibLabels(){
 /* ==========================================================================
    6. ヒットテスト
    ========================================================================== */
+/** ハンドルを操作できるのは選択ツールのときだけ。作図ツール中は掴めないので描画もしない
+ *  （描いてあるのに反応しないと、掴んだつもりで新しい図形を描き始めてしまう） */
+const handlesActive = () => ui.tool === 'select';
 /** 選択中の単一オブジェクトのハンドルを screen 距離で判定 */
 function hitHandle(sp){
+  if(!handlesActive()) return null;
   const sel = selected();
   if(sel.length !== 1) return null;
   const s = sel[0];
@@ -2023,7 +2028,6 @@ cv.addEventListener('pointerdown', e=>{
     const s = makeHLine(price);
     act(()=>{ board.objects.push(s); });
     ui.selection = new Set([s.id]);
-    setTool('select');
     return;
   }
 
@@ -2219,10 +2223,10 @@ function commitPolyline(){
   ui.selection = new Set([s.id]);
   return true;
 }
-/** 折れ線を確定して選択ツールへ戻る（他の作成ツールと同じ挙動） */
+/** 折れ線を確定する。ツールは持ち替えないので、続けて次の折れ線を描き始められる */
 function finishPolyline(){
   commitPolyline();
-  setTool('select');
+  requestRender(); syncUI();
 }
 /** 作図中の折れ線を破棄する（ボード切替など、確定させたくない場面用） */
 function cancelPolyline(){
@@ -2241,10 +2245,12 @@ function endDrag(){
     const s = d.commit ? d.commit() : d.preview;
     if(s){
       act(()=>{ board.objects.push(s); });
+      // ツールは持ち替えずに残す（同じものを続けて描けるように）。
+      // 直前に作ったものは選択したままにするので、右パネルでそのまま調整できる。
+      // 選択ツールへ戻るのは V キー / Esc / ツールバーのクリック。
       ui.selection = new Set([s.id]);
       if(s.type==='text') startEditing(s);   // テキストは確定直後にそのまま編集へ
     }
-    setTool('select');
   } else if(d.mode==='handle' || d.mode==='move'){
     if(d.mode==='handle'){ const s=byId(d.id); if(s && s.type==='candle') normalizeCandle(s); }
     commitAction();
@@ -2372,8 +2378,9 @@ window.addEventListener('keydown', e=>{
   }
   if(k==='Escape'){
     if(!$('help').hidden){ $('help').hidden=true; return; }
-    // 折れ線の作図中: 描きかけを破棄する（確定は Enter / 最後の頂点をクリック）
-    if(ui.poly){ cancelPolyline(); setTool('select'); return; }
+    // 折れ線の作図中: まず描きかけだけを破棄する（確定は Enter / 最後の頂点をクリック）。
+    // ツールはここでは残す。もう一度 Esc を押せば下の行で選択ツールへ戻る。
+    if(ui.poly){ cancelPolyline(); return; }
     ui.selection.clear(); setTool('select'); return;
   }
   if(k.startsWith('Arrow')){
