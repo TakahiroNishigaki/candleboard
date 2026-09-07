@@ -295,10 +295,9 @@ body{
     <tr><td class="k">N</td><td>番号バッジ</td></tr>
     <tr><td class="k">F</td><td>フィボナッチ・リトレースメント</td></tr>
     <tr><td class="grp" colspan="2">ビュー</td></tr>
-    <tr><td class="k">ホイール</td><td>上下パン</td></tr>
+    <tr><td class="k">ホイール</td><td>カーソル中心にズーム</td></tr>
     <tr><td class="k">Shift + ホイール</td><td>左右パン</td></tr>
     <tr><td class="k">2本指ドラッグ（タッチ）</td><td>パン。指の間隔を変えるとズーム</td></tr>
-    <tr><td class="k">Ctrl/⌘ + ホイール</td><td>カーソル中心にズーム</td></tr>
     <tr><td class="k">右ボタンドラッグ</td><td>パン</td></tr>
     <tr><td class="k">Shift + 1</td><td>全体にフィット</td></tr>
     <tr><td class="k">Shift + 0 / ズーム率クリック</td><td>ズーム 100%</td></tr>
@@ -2290,20 +2289,26 @@ cv.addEventListener('dblclick', e=>{
 cv.addEventListener('contextmenu', e=>{ e.preventDefault(); });
 
 /* ---- ホイール: パン / ズーム ---- */
+/** ホイールの量を px に正規化する。deltaMode は環境で変わり（Firefox のマウスは行単位）、
+ *  生の deltaY をそのまま使うとブラウザによってズーム量が桁違いになる。 */
+function wheelPx(v, mode){
+  return mode === 1 ? v*16 : mode === 2 ? v*400 : v;   // 1=行 / 2=ページ / 0=ピクセル
+}
 cv.addEventListener('wheel', e=>{
   e.preventDefault();
   const c = cam();
-  if(e.ctrlKey || e.metaKey){
-    const sp = localPt(e), before = s2w(sp.x,sp.y);
-    const nz = clamp(c.zoom * Math.exp(-e.deltaY*0.002), 0.1, 8);
-    c.zoom = nz;
-    c.x = before.x - sp.x/nz;
-    c.y = before.y - sp.y/nz;
-  } else {
-    let dx = e.deltaX, dy = e.deltaY;
-    if(e.shiftKey && dx===0){ dx = dy; dy = 0; }
+  // Shift+ホイールだけ左右パン。それ以外はカーソル位置を中心にズームする。
+  // Ctrl/⌘ 付きもズームのまま: トラックパッドのピンチは ctrl+wheel として届くので、
+  // ここを分けるとピンチでズームできなくなる。
+  if(e.shiftKey){
+    const dx = wheelPx(e.deltaX || e.deltaY, e.deltaMode);
     c.x += dx / c.zoom;
-    c.y += dy / c.zoom;
+  } else {
+    const sp = localPt(e), before = s2w(sp.x,sp.y);
+    const nz = clamp(c.zoom * Math.exp(-wheelPx(e.deltaY, e.deltaMode)*0.002), 0.1, 8);
+    c.zoom = nz;
+    c.x = before.x - sp.x/nz;      // カーソルの下にあった点を動かさない
+    c.y = before.y - sp.y/nz;
   }
   requestRender(); syncTopbar();
 }, { passive:false });
