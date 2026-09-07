@@ -124,6 +124,35 @@ body{
   overflow-y:auto;padding:12px;user-select:none;
 }
 #inspector.collapsed{flex-basis:0;padding:0;overflow:hidden;border-left:none}
+#btnInspector{display:none}
+#btnInspector.has-sel::after{
+  content:'';position:absolute;top:3px;right:3px;width:5px;height:5px;border-radius:50%;
+  background:var(--accent);
+}
+
+/* ---- 狭い画面（スマホ縦持ちなど） --------------------------------------
+   216px 固定のインスペクタと 46px のツールバーで幅を取ると、400px 級の端末では
+   キャンバスが 150px しか残らず描けない。インスペクタを flex から外して
+   下からのシートにし、キャンバスに全幅を渡す。開閉はトップバーのボタン。
+   ---------------------------------------------------------------------- */
+@media (max-width:720px){
+  #topbar{gap:8px;padding:0 8px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  #topbar::-webkit-scrollbar{display:none}
+  #topbar > *{flex:0 0 auto}
+  #boardName{width:104px}
+  #lblCount,#saveStatus{display:none}
+  #btnInspector{display:inline-flex;position:relative}
+  #main{position:relative}
+  #inspector{
+    position:absolute;left:0;right:0;bottom:0;z-index:90;
+    flex:none;max-height:52%;
+    border-left:none;border-top:1px solid var(--border);
+    box-shadow:0 -6px 20px rgba(0,0,0,.35);
+    transform:translateY(101%);transition:transform .18s ease;
+    overscroll-behavior:contain;
+  }
+  #inspector.open{transform:none}
+}
 .ins-h{font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--text-dim);
   text-transform:uppercase;margin:0 0 9px}
 .ins-sec{margin-bottom:18px}
@@ -237,6 +266,7 @@ body{
     <span class="tb-label" id="lblCount">0 オブジェクト</span>
     <span class="tb-label" id="saveStatus">保存済</span>
     <div class="sep"></div>
+    <button class="tb-btn" id="btnInspector" title="設定パネルの表示切替">設定</button>
     <button class="tb-btn" id="btnHelp" title="ショートカット (?)">?</button>
   </header>
 
@@ -2560,7 +2590,7 @@ function applyTheme(){
   document.body.classList.toggle('light', light);
   if(changed) requestRender();   // グリッド/中空ローソクの色は themeColors 経由で次フレームに反映される
 }
-function syncUI(){ applyTheme(); syncTopbar(); syncToolbar(); buildInspector(); }
+function syncUI(){ applyTheme(); syncTopbar(); syncToolbar(); buildInspector(); syncInspectorToggle(); }
 
 function syncTopbar(){
   $('lblZoom').textContent = Math.round(cam().zoom*100) + '%';
@@ -2569,6 +2599,11 @@ function syncTopbar(){
   $('btnSnapY').classList.toggle('on', board.settings.snapY);
   $('lblCount').textContent = board.objects.length + ' オブジェクト'
     + (ui.selection.size ? ` / ${ui.selection.size} 選択中` : '');
+}
+/** 狭い画面ではインスペクタを下からのシートにしている。開いていないと選択中の
+ *  オブジェクトを編集できないことに気づきにくいので、選択があるときはボタンに印を出す。 */
+function syncInspectorToggle(){
+  $('btnInspector').classList.toggle('has-sel', ui.selection.size > 0 && !$('inspector').classList.contains('open'));
 }
 function syncToolbar(){
   for(const b of document.querySelectorAll('.tool'))
@@ -3038,6 +3073,7 @@ $('btnZoomIn').onclick = ()=>zoomAtCenter(1.25);
 $('btnZoomOut').onclick = ()=>zoomAtCenter(1/1.25);
 $('btnFit').onclick = fitToContent;
 $('lblZoom').onclick = ()=>{ cam().zoom=1; requestRender(); syncTopbar(); };
+$('btnInspector').onclick = ()=>{ $('inspector').classList.toggle('open'); syncInspectorToggle(); };
 $('btnHelp').onclick = ()=>{ $('help').hidden = !$('help').hidden; };
 $('help').onclick = e=>{ if(e.target.id==='help') $('help').hidden = true; };
 $('boardName').onchange = e=>{
