@@ -5,10 +5,15 @@
 <!-- ファビコン: 単一ファイル構成を保つため、SVG を data URI で埋め込む -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%2314171c'/%3E%3Cpath d='M7.5 4.5H7.25V2C7.25 1.59 6.91 1.25 6.5 1.25C6.09 1.25 5.75 1.59 5.75 2V4.5H5.5C3.91 4.5 3 5.41 3 7V13C3 14.59 3.91 15.5 5.5 15.5H5.75V22C5.75 22.41 6.09 22.75 6.5 22.75C6.91 22.75 7.25 22.41 7.25 22V15.5H7.5C9.09 15.5 10 14.59 10 13V7C10 5.41 9.09 4.5 7.5 4.5Z' fill='%2326a69a'/%3E%3Cpath d='M18.5 8.5H18.25V2C18.25 1.59 17.91 1.25 17.5 1.25C17.09 1.25 16.75 1.59 16.75 2V8.5H16.5C14.91 8.5 14 9.41 14 11V17C14 18.59 14.91 19.5 16.5 19.5H16.75V22C16.75 22.41 17.09 22.75 17.5 22.75C17.91 22.75 18.25 22.41 18.25 22V19.5H18.5C20.09 19.5 21 18.59 21 17V11C21 9.41 20.09 8.5 18.5 8.5Z' fill='%23ef5350'/%3E%3C/svg%3E">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- リンクを知っている人だけが使う想定。検索エンジンには載せない -->
+<meta name="robots" content="noindex">
 <title>CandleBoard</title>
 <style>
 /* ============================================================
    CandleBoard — 手描きローソク足チャートボード
+   Copyright (c) 2026 Roku / MIT License
+   https://github.com/TakahiroNishigaki/candleboard
+
    骨組み / camera / グリッド / パン・ズーム / 描画ループ
    Candle オブジェクト / 選択・移動・削除・コピペ / Undo・Redo / 重ね順
    描画ツール群 / フィボナッチ / 永続化・複数ボード・JSON入出力
@@ -262,6 +267,7 @@ body{
     <tr><td class="grp" colspan="2">ビュー</td></tr>
     <tr><td class="k">ホイール</td><td>上下パン</td></tr>
     <tr><td class="k">Shift + ホイール</td><td>左右パン</td></tr>
+    <tr><td class="k">2本指ドラッグ（タッチ）</td><td>パン。指の間隔を変えるとズーム</td></tr>
     <tr><td class="k">Ctrl/⌘ + ホイール</td><td>カーソル中心にズーム</td></tr>
     <tr><td class="k">右ボタンドラッグ</td><td>パン</td></tr>
     <tr><td class="k">Shift + 1</td><td>全体にフィット</td></tr>
@@ -408,6 +414,7 @@ const ui = {
   badgeNext: null,     // 番号バッジの「次の値」の手動指定。null なら板の中身から導出する
   lastParams: {},      // 型ごとの「直近に編集されたスタイル的パラメータ」。新規作成時の初期値に使う
   poly: null,          // { pts:[x,y,...], cursor:{x,y} } — 折れ線の作図中。ui.drag と違いクリックをまたいで残る
+  pinch: null,         // 2本指のパン/ズーム中の基準値。ui.drag とは排他
 };
 
 /* ==========================================================================
@@ -1818,7 +1825,48 @@ function updateCursor(){
    ========================================================================== */
 function localPt(e){ const r=cv.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
 
+/* ---- 2本指のパン / ピンチズーム -------------------------------------------
+   タッチ環境には右ボタンもホイールも Space も無いので、スマホでは2本指が
+   唯一の視点操作になる。#cv は touch-action:none なのでブラウザ既定の
+   スクロール/ズームは起きず、ここで全部やる必要がある。
+
+   指の「中点」と「間隔」の2つだけを見る。中点の移動がパン、間隔の比がズーム。
+   開始時の中点にあったワールド座標を、常に現在の中点の下へ置き直すことで、
+   パンとズームが1つの式で同時に成立する（ホイールズームと同じ考え方）。
+   ------------------------------------------------------------------------ */
+const activePointers = new Map();          // pointerId -> スクリーン座標
+const ZOOM_MIN = 0.1, ZOOM_MAX = 8;
+function pinchGeom(){
+  const [a, b] = [...activePointers.values()];
+  return { d: Math.hypot(b.x-a.x, b.y-a.y), mid: { x:(a.x+b.x)/2, y:(a.y+b.y)/2 } };
+}
+function startPinch(){
+  // 進行中の1本指操作は畳んでから移る。作りかけ（create）は捨て、
+  // 移動/ハンドルは確定させる（既にオブジェクトが動いているので Undo を残したい）。
+  if(ui.drag){
+    if(ui.drag.mode === 'create' || ui.drag.mode === 'marquee' || ui.drag.mode === 'pan'){
+      cancelAction(); ui.drag = null;
+    }else{
+      endDrag();
+    }
+  }
+  const g = pinchGeom(), c = cam();
+  ui.pinch = { d0: g.d || 1, zoom0: c.zoom, world0: s2w(g.mid.x, g.mid.y) };
+  requestRender();
+}
+function updatePinch(){
+  const g = pinchGeom(), c = cam(), p = ui.pinch;
+  c.zoom = clamp(p.zoom0 * (g.d / p.d0), ZOOM_MIN, ZOOM_MAX);
+  // 開始時に中点にあったワールド点を、今の中点の下へ戻す（w2s の逆算）
+  c.x = p.world0.x - g.mid.x / c.zoom;
+  c.y = p.world0.y - g.mid.y / c.zoom;
+  requestRender(); syncTopbar();
+}
+
 cv.addEventListener('pointerdown', e=>{
+  activePointers.set(e.pointerId, localPt(e));
+  if(activePointers.size === 2){ cv.setPointerCapture(e.pointerId); startPinch(); return; }
+  if(activePointers.size > 2) return;      // 3本目以降は無視（2本指のジェスチャを乱さない）
   cv.setPointerCapture(e.pointerId);
   ui.altHeld = e.altKey;   // keyup 取りこぼしで altHeld が固着するのを毎回のポインタ操作で自己修復する
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
@@ -2046,6 +2094,8 @@ cv.addEventListener('pointerdown', e=>{
 });
 
 cv.addEventListener('pointermove', e=>{
+  if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, localPt(e));
+  if(ui.pinch){ if(activePointers.size >= 2) updatePinch(); return; }
   ui.altHeld = e.altKey;   // keyup 取りこぼしで altHeld が固着するのを毎回のポインタ操作で自己修復する
   const sp = localPt(e), wp = s2w(sp.x,sp.y);
   ui.mouseWorld = wp;
@@ -2173,8 +2223,17 @@ function endDrag(){
   }
   updateCursor(); requestRender(); syncUI();
 }
-cv.addEventListener('pointerup', endDrag);
-cv.addEventListener('pointercancel', endDrag);
+function endPointer(e){
+  activePointers.delete(e.pointerId);
+  if(ui.pinch){
+    // 指が1本になったら終了。残った指で描画が始まらないよう、ここでは endDrag を呼ばない
+    if(activePointers.size < 2){ ui.pinch = null; updateCursor(); requestRender(); syncTopbar(); }
+    return;
+  }
+  endDrag();
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
 
 /* テキストの再編集用。既存の pointerdown/move/up 状態機械とは独立に動作し、
    干渉しない（ダブルクリックは通常の 2 回の down/up が先に処理された後に発火する）。
