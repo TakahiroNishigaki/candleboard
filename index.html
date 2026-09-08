@@ -60,10 +60,18 @@ body{
 /* ---- トップバー ---- */
 #topbar{
   position:relative;z-index:95;
-  flex:0 0 40px;display:flex;align-items:center;gap:14px;padding:0 12px;
+  flex:0 0 auto;display:flex;flex-direction:column;
   background:var(--panel);border-bottom:1px solid var(--border);user-select:none;
 }
+/* 左 padding は下の縦ツールバー（46px 幅に 32px アイコンを中央寄せ ＝ 左 7px）に合わせる */
+#tbTitle{display:flex;align-items:center;padding:5px 12px 4px 7px;border-bottom:1px solid var(--border)}
+#tbTools{flex:0 0 40px;display:flex;align-items:center;gap:14px;padding:0 12px 0 7px}
 #topbar .sep{width:1px;height:20px;background:var(--border)}
+#brand{
+  display:flex;align-items:baseline;gap:7px;white-space:nowrap;
+  font-size:15px;font-weight:700;letter-spacing:.12em;color:var(--text);
+}
+#brand .by{font-weight:400;font-size:12px;letter-spacing:.02em;color:var(--text-dim)}
 #boardName{
   background:transparent;border:1px solid transparent;color:var(--text);
   font:inherit;font-weight:600;padding:3px 7px;border-radius:5px;width:190px;
@@ -136,9 +144,10 @@ body{
    下からのシートにし、キャンバスに全幅を渡す。開閉はトップバーのボタン。
    ---------------------------------------------------------------------- */
 @media (max-width:720px){
-  #topbar{gap:8px;padding:0 8px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-  #topbar::-webkit-scrollbar{display:none}
-  #topbar > *{flex:0 0 auto}
+  #tbTitle{padding:4px 10px 3px 7px}
+  #tbTools{gap:8px;padding:0 8px 0 7px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  #tbTools::-webkit-scrollbar{display:none}
+  #tbTools > *{flex:0 0 auto}
   #boardName{width:104px}
   #lblCount,#saveStatus{display:none}
   #btnInspector{display:inline-flex;position:relative}
@@ -274,23 +283,28 @@ body{
 <div id="app">
 
   <header id="topbar">
-    <button class="tb-btn" id="btnBoards" title="ボード一覧">☰</button>
-    <input id="boardName" value="無題のボード" spellcheck="false">
-    <div class="sep"></div>
-    <span class="tb-label">グリッド幅 <span class="tb-val" id="lblGrid">20</span></span>
-    <button class="tb-btn on" id="btnSnapX" title="X方向グリッドスナップ (Alt で一時解除)">X</button>
-    <button class="tb-btn on" id="btnSnapY" title="Y方向グリッドスナップ (Alt で一時解除)">Y</button>
-    <div class="sep"></div>
-    <button class="tb-btn" id="btnZoomOut">−</button>
-    <span class="tb-val" id="lblZoom" style="text-align:center;cursor:pointer" title="クリックで 100% に戻す (Shift+0)">100%</span>
-    <button class="tb-btn" id="btnZoomIn">＋</button>
-    <button class="tb-btn" id="btnFit" title="全体にフィット (Shift+1)">フィット</button>
-    <div id="spacer"></div>
-    <span class="tb-label" id="lblCount">0 オブジェクト</span>
-    <span class="tb-label" id="saveStatus">保存済</span>
-    <div class="sep"></div>
-    <button class="tb-btn" id="btnInspector" title="設定パネルの表示切替">設定</button>
-    <button class="tb-btn" id="btnHelp" title="ショートカット (?)">?</button>
+    <div id="tbTitle">
+      <span id="brand">CANDLE&nbsp;BOARD<span class="by">by ColTechArt</span></span>
+    </div>
+    <div id="tbTools">
+      <button class="tb-btn" id="btnBoards" title="ボード一覧">☰</button>
+      <input id="boardName" value="無題のボード" spellcheck="false">
+      <div class="sep"></div>
+      <span class="tb-label">グリッド幅 <span class="tb-val" id="lblGrid">20</span></span>
+      <button class="tb-btn on" id="btnSnapX" title="X方向グリッドスナップ (Alt で一時解除)">X</button>
+      <button class="tb-btn on" id="btnSnapY" title="Y方向グリッドスナップ (Alt で一時解除)">Y</button>
+      <div class="sep"></div>
+      <button class="tb-btn" id="btnZoomOut">−</button>
+      <span class="tb-val" id="lblZoom" style="text-align:center;cursor:pointer" title="クリックで 100% に戻す (Shift+0)">100%</span>
+      <button class="tb-btn" id="btnZoomIn">＋</button>
+      <button class="tb-btn" id="btnFit" title="全体にフィット (Shift+1)">フィット</button>
+      <div id="spacer"></div>
+      <span class="tb-label" id="lblCount">0 オブジェクト</span>
+      <span class="tb-label" id="saveStatus">保存済</span>
+      <div class="sep"></div>
+      <button class="tb-btn" id="btnInspector" title="設定パネルの表示切替">設定</button>
+      <button class="tb-btn" id="btnHelp" title="ショートカット (?)">?</button>
+    </div>
   </header>
 
   <div id="main">
