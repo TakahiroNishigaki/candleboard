@@ -1168,11 +1168,30 @@ const currentBadgeSeq = () => {
   const q = ui.lastParams.badge;
   return (q && BADGE_SEQS.includes(q.seq)) ? q.seq : '123';
 };
-function setBadgeSeq(seq){
-  ui.lastParams.badge = Object.assign({}, ui.lastParams.badge, { seq });
+/** バッジツールの引き継ぎパラメータ（系列・色・大きさ）を部分更新して永続化する。
+ *  選択中バッジが無くても、次に置くバッジの見た目をここで決められる。 */
+function updateBadgeParams(patch){
+  ui.lastParams.badge = Object.assign({}, ui.lastParams.badge, patch);
   saveLastParams();
+}
+function setBadgeSeq(seq){
+  updateBadgeParams({ seq });
   ui.badgeNext = null;     // 系列を変えたら「次の値」の指定は捨て、板から採り直す
 }
+/** ツールが今使う塗り色。直近に置いた（＝引き継ぎ中の）バッジの設定を正とする */
+const currentBadgeStroke = () => {
+  const st = ui.lastParams.badge && ui.lastParams.badge.style;
+  return (st && st.stroke) || AUTO_COLOR;
+};
+function setBadgeStroke(v){
+  const cur = (ui.lastParams.badge && ui.lastParams.badge.style) || {};
+  updateBadgeParams({ style: Object.assign({}, DEFAULT_STYLE, cur, { stroke: v }) });
+};
+/** ツールが今使う半径。未設定なら既定値 */
+const currentBadgeR = () => {
+  const r = ui.lastParams.badge && ui.lastParams.badge.r;
+  return (typeof r === 'number' && isFinite(r)) ? r : BADGE_DEFAULT_R;
+};
 /** 次に置く序数 */
 function nextBadgeN(){
   if(ui.badgeNext != null) return ui.badgeNext;
@@ -1812,10 +1831,16 @@ function buildToolbar(){
   }
 }
 function setTool(id){
+  const prev = ui.tool;
   // 作図中に別ツールへ移るときは、描きかけを捨てずに確定させる（同じツールの再選択は継続）
   if(ui.poly && id !== ui.poly.tool) commitPolyline();
   ui.tool = id;
   if(id !== 'select') ui.selection.clear();
+  // 番号バッジは選択がなくても系列・次の値をパネルで設定する。狭い画面ではシートが
+  // 閉じていると触れないので、バッジツールに入ったら自動で開き、抜けたら（選択が無ければ）閉じる。
+  // 広い画面のインスペクタは常時表示なので、どちらも見た目に影響しない。
+  if(id === 'badge') $('inspector').classList.add('open');
+  else if(prev === 'badge' && !ui.selection.size) $('inspector').classList.remove('open');
   syncUI(); requestRender(); updateCursor();
 }
 const CREATE_TOOLS = new Set(['candle','candlepath','pen','line','polyline','arrow','hline','rect','text','badge','fib']);
@@ -2709,7 +2734,8 @@ function buildInspector(){
   }
 }
 
-/** 番号バッジの系列と「次の値」。バッジツール選択中に右パネルの先頭へ出す */
+/** 番号バッジの系列・色・大きさ・「次の値」。バッジツール選択中に右パネルの先頭へ出す
+ *  （選択が無くても、次に置くバッジの見た目をここで決められる） */
 function buildBadgeToolSection(ins){
   const sec = document.createElement('div'); sec.className='ins-sec';
   const h = document.createElement('div'); h.className='ins-h'; h.textContent='番号バッジ';
@@ -2726,6 +2752,30 @@ function buildBadgeToolSection(ins){
     wrap.appendChild(bt);
   }
   row.append(l, wrap); sec.appendChild(row);
+
+  // 色（選択中バッジが無くても、次に置くバッジの色をここで決める）
+  const crow = document.createElement('div'); crow.className='row';
+  const cl = document.createElement('label'); cl.textContent='色';
+  const stroke = currentBadgeStroke();
+  const isAuto = stroke === AUTO_COLOR;
+  const ci = document.createElement('input'); ci.type='color';
+  ci.value = isAuto ? themeColors.ink : stroke;   // type=color は 'auto' を解釈できないので実色を見せる
+  ci.oninput  = ()=>{ setBadgeStroke(ci.value); };
+  ci.onchange = ()=>{ setBadgeStroke(ci.value); syncUI(); };
+  crow.append(cl, ci);
+  const ab = document.createElement('button');
+  ab.className = 'tb-btn' + (isAuto ? ' on' : '');
+  ab.textContent = '自動';
+  ab.title = 'テーマに合わせて白／黒を切り替える（ライトでもダークでも見えるようにする）';
+  ab.onclick = ()=>{ setBadgeStroke(isAuto ? ci.value : AUTO_COLOR); syncUI(); };
+  crow.appendChild(ab);
+  sec.appendChild(crow);
+
+  // 大きさ（半径）
+  sec.appendChild(num('大きさ（半径）', currentBadgeR(), v=>{
+    updateBadgeParams({ r: clamp(v || BADGE_DEFAULT_R, BADGE_MIN_R, BADGE_MAX_R) });
+    syncUI();
+  }, 1));
 
   const nrow = document.createElement('div'); nrow.className='row';
   const nl2 = document.createElement('label'); nl2.textContent='次の値';
