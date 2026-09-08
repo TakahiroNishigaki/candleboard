@@ -163,6 +163,11 @@ body{
   font:inherit;font-variant-numeric:tabular-nums;padding:3px 6px;border-radius:5px;text-align:right;
 }
 .row input[type=number]:focus,.row input[type=text]:focus{outline:none;border-color:var(--accent)}
+.row input[type=range]{flex:1 1 auto;min-width:0;height:20px;accent-color:var(--accent);cursor:pointer}
+.row .slider-val{
+  color:var(--text);font-size:12px;font-variant-numeric:tabular-nums;
+  flex:0 0 auto;width:38px;text-align:right;
+}
 .row input[type=color]{
   width:34px;height:24px;padding:0;border:1px solid var(--border);border-radius:5px;
   background:var(--bg);cursor:pointer;
@@ -313,6 +318,7 @@ body{
     <tr><td class="k">Esc</td><td>描きかけを破棄</td></tr>
     <tr><td class="k">Shift</td><td>直前の頂点から 45 度刻みに拘束</td></tr>
     <tr><td class="k">ローソク足パスの確定</td><td>描いた線を価格の中心線として、その周りを振れるローソク足を生成（線自体は残らない）</td></tr>
+    <tr><td class="k">振れ幅 / ヒゲの長さ</td><td>ローソク足パスツール選択中に右パネルで調整（次に描く線に適用。100% ＝ 既定）</td></tr>
     <tr><td class="grp" colspan="2">編集</td></tr>
     <tr><td class="k">Shift + クリック</td><td>選択に追加 / 除外</td></tr>
     <tr><td class="k">Ctrl + A</td><td>全選択</td></tr>
@@ -646,6 +652,10 @@ const CARRY_PARAMS = {
   text:  ['style','fontSize','align'],
   badge: ['style','r','seq'],
   fib:   ['style','levels','extend','showPrice'],
+  // candlepath は確定するとローソク足に分解され専用オブジェクトが残らない。
+  // 対応する型は無いが、生成時の設定（振れ幅・ヒゲの倍率）を localStorage へ
+  // 引き継ぐために、ここを永続化のホワイトリストとして流用する。
+  candlepath: ['jitter','wick'],
 };
 /** 1オブジェクト分を記憶する。記憶したら true を返す（呼び出し側が1回だけ保存できるように） */
 function rememberLastParams(s){
@@ -2491,7 +2501,21 @@ function distributeX(){
    h >= max(o,c) >= min(o,c) >= l を保証する。
 
    揺らぎは折れ線の座標から作った種で決定論的に出す（同じ折れ線からは常に同じ結果）。
+   振れ幅・ヒゲの長さは下記2つの倍率でユーザーが調整する（既定は 1.0 ＝従来の値）。
    ------------------------------------------------------------------------ */
+const CANDLEPATH_MULT_MAX = 3;
+/** ローソク足パスの生成設定（振れ幅・ヒゲの倍率）。選択オブジェクトが無くても
+ *  ツール欄で設定でき、CARRY_PARAMS 経由で localStorage に引き継がれる。 */
+function updateCandlePathParams(patch){
+  ui.lastParams.candlepath = Object.assign({}, ui.lastParams.candlepath, patch);
+  saveLastParams();
+}
+const candlePathMult = key => {
+  const v = ui.lastParams.candlepath && ui.lastParams.candlepath[key];
+  return (typeof v === 'number' && isFinite(v)) ? clamp(v, 0, CANDLEPATH_MULT_MAX) : 1;
+};
+const currentCandlePathJitter = () => candlePathMult('jitter');   // 中心線からの振れ幅の倍率
+const currentCandlePathWick   = () => candlePathMult('wick');     // 実体から伸びるヒゲの長さの倍率
 /** 折れ線を「Xの関数」とみなして x 位置のワールドY を返す。
  *  x を含む最初の線分を線形補間する（左→右に描かれた通常の折れ線なら一意）。
  *  X範囲の外側は端点の値で水平に外挿する。 */
@@ -2576,7 +2600,9 @@ function candlesFromPolyline(pts){
   // ほぼ全部が陽線になる。逆向きのローソクが 3 割ほど混ざるよう、揺らぎの幅は
   // 1本あたりの値動きの 2.2 倍を下限にする（この比で逆張りが約 30% 出る）。
   // ただし広げすぎると折れ線の形そのものが読めなくなるので、全体の値幅で頭打ちにする。
-  const jitter = Math.min(Math.max(amp*0.5, move*2.2), Math.max(amp*0.5, span*0.15));
+  // 既定の振れ幅を出したうえで、ユーザー指定の倍率（既定 1.0）で最終的に伸縮させる。
+  const jitterMult = currentCandlePathJitter(), wickMult = currentCandlePathWick();
+  const jitter = Math.min(Math.max(amp*0.5, move*2.2), Math.max(amp*0.5, span*0.15)) * jitterMult;
 
   const rnd = rngFrom(seedFromPts(pts));
   const round2 = v => Math.round(v*100)/100;
@@ -2587,8 +2613,8 @@ function candlesFromPolyline(pts){
   for(let i=0;i<n;i++){
     const o = p[i], c = p[i+1];
     const top = Math.max(o,c), bot = Math.min(o,c);
-    const h = round2(top + amp*(0.25 + rnd()*0.55));
-    const l = round2(bot - amp*(0.25 + rnd()*0.55));
+    const h = round2(top + amp*(0.25 + rnd()*0.55)*wickMult);
+    const l = round2(bot - amp*(0.25 + rnd()*0.55)*wickMult);
     out.push(normalizeCandle({ id:uid(), type:'candle', x: startX + i*step, o, h, l, c }));
   }
   return out;
@@ -2654,6 +2680,18 @@ function num(label, value, onChange, step){
   i.onchange = ()=>onChange(parseFloat(i.value));
   row.append(l,i); return row;
 }
+/** スライダー行。onInput はドラッグ中も連続で呼ばれる。fmt で右端の数値表示を整形する */
+function slider(label, value, min, max, step, onInput, fmt){
+  const row = document.createElement('div'); row.className='row';
+  const l = document.createElement('label'); l.textContent = label;
+  const i = document.createElement('input'); i.type='range';
+  i.min=min; i.max=max; i.step=step; i.value=value;
+  const v = document.createElement('span'); v.className='slider-val';
+  const show = fmt || (x=>String(x));
+  v.textContent = show(value);
+  i.oninput = ()=>{ const n = parseFloat(i.value); v.textContent = show(n); onInput(n); };
+  row.append(l,i,v); return row;
+}
 /** 色の行。autoOk を渡すと「自動（テーマ追従）」に切り替えるボタンが付く */
 function color(label, value, onChange, autoOk){
   const row = document.createElement('div'); row.className='row';
@@ -2714,6 +2752,10 @@ function buildInspector(){
   ins.innerHTML = '';
   const sel = selected();
 
+  // ローソク足パスの設定欄は選択状態に依らず常に先頭へ出す。確定すると生成物（ローソク足）が
+  // 選択されるので、これを else 節に置くと連続作図の2本目以降で設定が隠れてしまう。
+  if(ui.tool === 'candlepath') buildCandlePathToolSection(ins);
+
   if(sel.length === 1 && INSPECTORS[sel[0].type]){
     INSPECTORS[sel[0].type](ins, sel[0]);
   } else if(sel.length > 1){
@@ -2732,6 +2774,26 @@ function buildInspector(){
     if(ui.tool === 'badge') buildBadgeToolSection(ins);
     buildBoardInspector(ins);
   }
+}
+
+/** ローソク足パスの生成設定（振れ幅・ヒゲの長さ）。ツール選択中に右パネルの先頭へ出す。
+ *  確定するとローソク足に分解されるので、設定は次に描く線へ引き継がれる。 */
+function buildCandlePathToolSection(ins){
+  const sec = document.createElement('div'); sec.className='ins-sec';
+  const h = document.createElement('div'); h.className='ins-h'; h.textContent='ローソク足パス';
+  sec.appendChild(h);
+  const pct = x => Math.round(x*100) + '%';
+  sec.appendChild(slider('振れ幅', currentCandlePathJitter(), 0, CANDLEPATH_MULT_MAX, 0.05,
+    v => updateCandlePathParams({ jitter: v }), pct));
+  sec.appendChild(slider('ヒゲの長さ', currentCandlePathWick(), 0, CANDLEPATH_MULT_MAX, 0.05,
+    v => updateCandlePathParams({ wick: v }), pct));
+  const hint = document.createElement('div'); hint.className='hintline'; hint.style.marginTop='8px';
+  hint.innerHTML = '線を描いて確定すると、その線を価格の中心線としてローソク足を生成します。'
+    + '<br>振れ幅＝中心線からの上下のばらつき（大きいほど逆行するローソクが増える）'
+    + '<br>ヒゲの長さ＝実体から伸びるヒゲ'
+    + '<br>プレビューは無いので、結果は確定後に調整してください（100% ＝ 既定）';
+  sec.appendChild(hint);
+  ins.appendChild(sec);
 }
 
 /** 番号バッジの系列・色・大きさ・「次の値」。バッジツール選択中に右パネルの先頭へ出す
