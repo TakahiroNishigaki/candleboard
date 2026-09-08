@@ -250,6 +250,24 @@ body{
   background:rgba(76,141,255,.08);display:flex;align-items:center;justify-content:center;
   color:var(--accent);font-size:14px;font-weight:600;pointer-events:none;z-index:40;
 }
+
+/* ---- 右クリックのコンテキストメニュー ---- */
+#ctxMenu,.ctx-sub{
+  position:fixed;z-index:120;min-width:168px;padding:4px;
+  background:var(--panel);border:1px solid var(--border);border-radius:8px;
+  box-shadow:0 8px 28px rgba(0,0,0,.4);font-size:13px;user-select:none;
+}
+#ctxMenu[hidden]{display:none}
+.ctx-sub{position:absolute;top:-5px;left:100%;margin-left:3px}
+#ctxMenu.flip-sub .ctx-sub{left:auto;right:100%;margin-left:0;margin-right:3px}
+.ctx-item{
+  position:relative;padding:7px 10px;border-radius:5px;cursor:pointer;white-space:nowrap;
+  display:flex;align-items:center;justify-content:space-between;gap:18px;
+}
+.ctx-item:hover,.ctx-item.open{background:var(--panel2)}
+.ctx-item.has-sub > .ctx-sub{display:none}
+.ctx-item.has-sub.open > .ctx-sub,.ctx-item.has-sub:hover > .ctx-sub{display:block}
+.ctx-arrow{color:var(--text-dim);font-size:11px}
 </style>
 </head>
 <body>
@@ -341,6 +359,8 @@ body{
     <tr><td class="k">テキストの上のハンドル</td><td>ドラッグで回転（Shift で 15 度刻み）</td></tr>
     <tr><td class="k">作図ツール</td><td>描いた後もツールは持ち替えない（同じものを続けて描ける）</td></tr>
     <tr><td class="k">Esc</td><td>選択解除 / 選択ツールへ / パネルを閉じる</td></tr>
+    <tr><td class="k">Ctrl + ] / Ctrl + [</td><td>最前面 / 背面へ移動</td></tr>
+    <tr><td class="k">右クリック</td><td>コンテキストメニュー（レイヤー移動：最前面 / 一つ手前 / 一つ後ろ / 背面）</td></tr>
     <tr><td class="k">複数選択</td><td>右パネルでスタイルを一括変更</td></tr>
     <tr><td class="k">色欄の「自動」</td><td>テーマに合わせて白／黒を切り替える。既定値なので、ライト／ダークどちらでも見える。明示的に色を選ぶと解除される（複数選択してまとめて戻すことも可）</td></tr>
     <tr><td class="grp" colspan="2">ボード / データ</td></tr>
@@ -382,6 +402,18 @@ body{
   <p id="msgText"></p>
   <div class="confirm-actions" id="msgActions"></div>
 </div></div>
+
+<div id="ctxMenu" hidden>
+  <div class="ctx-item has-sub" data-sub>
+    <span>レイヤー移動</span><span class="ctx-arrow">▸</span>
+    <div class="ctx-sub">
+      <div class="ctx-item" data-act="front">最前面に移動</div>
+      <div class="ctx-item" data-act="forward">一つ手前に移動</div>
+      <div class="ctx-item" data-act="backward">一つ後ろに移動</div>
+      <div class="ctx-item" data-act="back">背面に移動</div>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -1944,9 +1976,12 @@ cv.addEventListener('pointerdown', e=>{
   // テキスト編集中に他所をクリックしたら、blur イベントのタイミングに依存せず確実に確定させる
   if(ui.editing) finalizeEditing();
 
+  closeCtxMenu();
+
   // --- パン ---
+  // 右ボタンはドラッグでパン。動かさずに離したら（＝右クリック）コンテキストメニューを出す。
   if(e.button===2 || ui.spaceHeld || ui.tool==='hand'){
-    ui.drag = { mode:'pan', sp, cam:{...cam()} };
+    ui.drag = { mode:'pan', sp, cam:{...cam()}, rightClick:e.button===2, moved:false };
     updateCursor(); return;
   }
   if(e.button!==0) return;
@@ -2189,6 +2224,7 @@ cv.addEventListener('pointermove', e=>{
   }
 
   if(d.mode==='pan'){
+    if(Math.hypot(sp.x-d.sp.x, sp.y-d.sp.y) > 4) d.moved = true;
     const z = cam().zoom;
     cam().x = d.cam.x - (sp.x-d.sp.x)/z;
     cam().y = d.cam.y - (sp.y-d.sp.y)/z;
@@ -2300,7 +2336,10 @@ function endPointer(e){
     if(activePointers.size < 2){ ui.pinch = null; updateCursor(); requestRender(); syncTopbar(); }
     return;
   }
+  const d = ui.drag;
+  const rightClick = d && d.mode==='pan' && d.rightClick && !d.moved;
   endDrag();
+  if(rightClick) openContextMenu(e);
 }
 cv.addEventListener('pointerup', endPointer);
 cv.addEventListener('pointercancel', endPointer);
@@ -2322,6 +2361,50 @@ cv.addEventListener('dblclick', e=>{
 
 // 右ボタンをパンに使うため、右クリックのブラウザ標準コンテキストメニューを抑止する
 cv.addEventListener('contextmenu', e=>{ e.preventDefault(); });
+
+/* ---- 右クリックのコンテキストメニュー（重ね順の変更） --------------------
+   右ドラッグはパン、右クリック（動かさず離す）でメニュー。判定は endPointer 側。 */
+const CTX_ACTIONS = { front:'front', forward:'forward', backward:'backward', back:'back' };
+function closeCtxMenu(){
+  const m = $('ctxMenu');
+  if(m.hidden) return;
+  m.hidden = true;
+  m.querySelectorAll('.ctx-item.open').forEach(el=>el.classList.remove('open'));
+}
+function openContextMenu(e){
+  // 選択ツールなら、カーソル下のオブジェクトを掴んで選択してからメニューを出す
+  if(ui.tool==='select'){
+    const sp = localPt(e), hit = hitObject(s2w(sp.x, sp.y));
+    if(hit && !ui.selection.has(hit.id)){ ui.selection = new Set([hit.id]); syncUI(); requestRender(); }
+  }
+  if(!ui.selection.size) return;   // 動かす対象が無ければ出さない
+
+  const m = $('ctxMenu');
+  m.hidden = false;
+  // 画面からはみ出さない位置へ。まず仮表示してサイズを測る
+  m.style.left = '0px'; m.style.top = '0px';
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  const x = Math.min(e.clientX, innerWidth  - mw - 6);
+  const y = Math.min(e.clientY, innerHeight - mh - 6);
+  m.style.left = Math.max(6, x) + 'px';
+  m.style.top  = Math.max(6, y) + 'px';
+  // 右端に寄っていてサブメニュー（約 176px）が収まらないなら左側へ開く
+  m.classList.toggle('flip-sub', Math.max(6, x) + mw + 176 > innerWidth);
+}
+$('ctxMenu').addEventListener('click', e=>{
+  const item = e.target.closest('.ctx-item');
+  if(!item) return;
+  if(item.dataset.act){ reorder(CTX_ACTIONS[item.dataset.act]); closeCtxMenu(); return; }
+  if(item.hasAttribute('data-sub')) item.classList.toggle('open');   // タップでも開けるように
+});
+// メニュー外をクリック / スクロール / ウィンドウ喪失で閉じる（capture でメニュー内は除外）。
+// §0.8「新規グローバルリスナ禁止」の例外: ポップアップの外側クリック検出は canvas 内の
+// 状態機械では拾えないため、ここだけ window で受ける。
+window.addEventListener('pointerdown', e=>{
+  if(!$('ctxMenu').hidden && !e.target.closest('#ctxMenu')) closeCtxMenu();
+}, true);
+window.addEventListener('wheel', ()=>closeCtxMenu(), true);
+window.addEventListener('blur', ()=>closeCtxMenu());
 
 /* ---- ホイール: パン / ズーム ---- */
 /** ホイールの量を px に正規化する。deltaMode は環境で変わり（Firefox のマウスは行単位）、
@@ -2358,6 +2441,10 @@ window.addEventListener('keydown', e=>{
   if(isTyping(e)){
     if(e.key==='Escape') e.target.blur();
     return;
+  }
+  if(!$('ctxMenu').hidden){
+    if(e.key==='Escape'){ closeCtxMenu(); return; }
+    closeCtxMenu();   // 他のキー操作に入る前にメニューは畳む
   }
   {
     const drawerOpen = $('boardDrawer').classList.contains('open');
@@ -2468,11 +2555,24 @@ function duplicateBeside(dir){
   const copies = sel.map(s=>{ const n=clone(s); n.id=uid(); n.x += step*dir; return n; });
   act(()=>{ board.objects.push(...copies); ui.selection = new Set(copies.map(s=>s.id)); });
 }
+/** 重ね順の変更。配列順 = 重ね順（末尾が最前面）。
+ *  front/back は端まで、forward/backward は 1 段だけ動かす。
+ *  複数選択時は選択の相対順を保ったまままとめて動かす（未選択の要素だけを跨ぐ）。 */
 function reorder(where){
   const sel = selected(); if(!sel.length) return;
+  const has = id => ui.selection.has(id);
   act(()=>{
-    const rest = board.objects.filter(o=>!ui.selection.has(o.id));
-    board.objects = where==='front' ? [...rest, ...sel] : [...sel, ...rest];
+    const objs = board.objects;
+    if(where==='front' || where==='back'){
+      const rest = objs.filter(o=>!has(o.id));
+      board.objects = where==='front' ? [...rest, ...sel] : [...sel, ...rest];
+    } else if(where==='forward'){
+      for(let i=objs.length-2;i>=0;i--)
+        if(has(objs[i].id) && !has(objs[i+1].id)) [objs[i],objs[i+1]]=[objs[i+1],objs[i]];
+    } else if(where==='backward'){
+      for(let i=1;i<objs.length;i++)
+        if(has(objs[i].id) && !has(objs[i-1].id)) [objs[i],objs[i-1]]=[objs[i-1],objs[i]];
+    }
   });
 }
 /** X 方向に等間隔整列 */
