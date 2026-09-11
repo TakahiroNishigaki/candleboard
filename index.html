@@ -218,8 +218,10 @@ body{
   letter-spacing:.05em;text-transform:uppercase}
 
 /* ---- ボード一覧ドロワー ---- */
-/* トップバー（高さ40px）はドロワーより手前に表示し、☰ ボタンを開閉トグルとして常に押せるようにする */
-#boardDrawer{position:fixed;left:0;right:0;top:40px;bottom:0;z-index:90;display:none}
+/* トップバーはドロワーより手前に表示し、☰ ボタンを開閉トグルとして常に押せるようにする。
+   トップバーは2段構成で高さが伸縮する（狭い画面ではタイトル行の余白が変わる）ため、
+   固定値ではなく ResizeObserver で測った --topbar-h を使う（JS の topbar-h 計測を参照）。 */
+#boardDrawer{position:fixed;left:0;right:0;top:var(--topbar-h, 70px);bottom:0;z-index:90;display:none}
 #boardDrawer.open{display:block}
 #boardDrawer .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5)}
 #boardDrawer .panel{
@@ -1431,6 +1433,13 @@ function resizeCanvas(){
   requestRender();
 }
 new ResizeObserver(resizeCanvas).observe($('stage'));
+
+/** ボードドロワーがトップバーの下からきちんと始まるよう、実測した高さを CSS 変数へ流す。
+ *  トップバーは2段構成で幅により高さが変わる（タイトル行の余白がメディアクエリで変わる）ため、
+ *  固定値をハードコードすると狭い画面や将来のレイアウト変更で簡単にズレる。 */
+new ResizeObserver(([entry])=>{
+  document.documentElement.style.setProperty('--topbar-h', entry.target.offsetHeight + 'px');
+}).observe($('topbar'));
 
 /** 現テーマの CSS カラー変数。render() の先頭で 1 フレームにつき 1 回だけ読み直す
  *  （getComputedStyle は毎回呼ぶとやや重いので、drawGrid() 等の毎フレーム呼び出しからは
