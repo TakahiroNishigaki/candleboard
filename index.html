@@ -1817,6 +1817,9 @@ function startEditing(s){
     // stopPropagation で window 側の isTyping() 分岐にすら渡さない。
     // そのため Escape の確定処理もここで自前で行う必要がある（window 側には委譲できない）。
     ev.stopPropagation();
+    // IME変換確定のEnter（isComposing / 旧ブラウザのkeyCode 229）はここで拾わない。
+    // 変換中にblur()すると合成が中断され、IMEが壊れた状態になる。
+    if(ev.isComposing || ev.keyCode===229) return;
     if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); div.blur(); }
     else if(ev.key==='Escape'){ ev.preventDefault(); div.blur(); }
   });
@@ -3716,6 +3719,7 @@ function startRenameInline(item, nameRow, b){
   input.addEventListener('click', e=>e.stopPropagation());
   input.addEventListener('keydown', e=>{
     e.stopPropagation();
+    if(e.isComposing || e.keyCode===229) return;
     if(e.key==='Enter'){ e.preventDefault(); input.blur(); }
     else if(e.key==='Escape'){ e.preventDefault(); done = true; input.value = b.name; input.blur(); refreshBoardList(); }
   });
