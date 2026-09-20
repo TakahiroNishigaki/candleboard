@@ -3251,6 +3251,13 @@ function buildFibInspector(ins, s){
   priceB.onclick = ()=>act(()=>{ s.showPrice = !s.showPrice; });
   priceRow.append(priceL, priceB); sec.appendChild(priceRow);
 
+  const invertRow = document.createElement('div'); invertRow.className='row';
+  const invertL = document.createElement('label'); invertL.textContent='レベル反転';
+  const invertB = document.createElement('button'); invertB.className='tb-btn';
+  invertB.textContent = '反転';
+  invertB.onclick = ()=>act(()=>{ const t=s.y1; s.y1=s.y2; s.y2=t; });
+  invertRow.append(invertL, invertB); sec.appendChild(invertRow);
+
   ins.appendChild(sec);
   buildStyleSection(ins, s);
 }
